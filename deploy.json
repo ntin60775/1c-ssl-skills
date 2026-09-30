@@ -1,0 +1,21 @@
+{
+  "contract_version": 1,
+  "strategy": "replace",
+  "mappings": [
+    {
+      "from": "skills/bsp",
+      "to": ".zcode/skills/bsp"
+    }
+  ],
+  "on_drift": "fail",
+  "preflight": [
+    {
+      "command": "python3 --version"
+    }
+  ],
+  "post_update": [
+    {
+      "say": "Скилл bsp (БСП 3.1.11) вендорен в .zcode/skills/bsp. Сверка сигнатур по выгрузке проекта: python3 .zcode/skills/bsp/scripts/bsp_api.py method <Модуль.Метод> --src src/cf. Если версия БСП проекта отличается от 3.1.11 — сигнатуры требуют перепроверки."
+    }
+  ]
+}
