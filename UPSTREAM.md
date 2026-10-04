@@ -36,3 +36,4 @@ python3 <1c-zcode>/scripts/lint_skill_frontmatter.py skills/
 | Дата | Коммит апстрима | Версия апстрима | Что менялось у нас |
 |---|---|---|---|
 | 2026-10-01 | `3785579` (v0.12) | v0.12 | создание зеркала: frontmatter + deploy.json + UPSTREAM.md |
+| 2026-10-04 | `c5585f33` (v0.13) | v0.13 | merge апстрима; тело bsp = ASCII-роутер v0.13, наш frontmatter сохранён; openai.yaml (новый у апстрима) снят; submodule vendor/ вне маппинга deploy |
