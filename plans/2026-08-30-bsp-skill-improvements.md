@@ -1,6 +1,6 @@
-# План улучшения скила BSP после v0.11
+# План улучшения скила BSP после v0.12
 
-План актуализирован по состоянию релиза v0.11. Статусы относятся к текущей
+План актуализирован 2026-10-02 по состоянию релиза v0.12. Статусы относятся к текущей
 реализации: `Done` — критерий закрыт, `Partial` — часть уже реализована,
 `Next` — остаётся выполнить.
 
@@ -86,11 +86,12 @@ reference в большинстве запусков. Полный прогон 
 анализатор BSL-сигнатур и контекста. Общий парсер пока не проверяет число
 аргументов, типы и семантику каждого вызова.
 
-## v0.12 — выпуск по решению пользователя с известным quality debt
+## Done — v0.12 выпущен с известным quality debt
 
-Текущая база — `v0.11`. Выпуск v0.12 готовится несмотря на провал поведенческого
-GREEN gate; это осознанная уступка release gate, не изменение и не снижение его
-порогов. Ограничение обязательно отразить в changelog и описании GitHub Release.
+Текущая база — `v0.12` (`3785579`). Релиз выпущен по решению пользователя
+несмотря на провал поведенческого GREEN gate; пороги gate не снижались.
+Ограничение отражено в changelog и опубликованном GitHub Release.
+Ниже сохранены результаты исторических прогонов v0.12, а не текущий gate.
 
 Полный RED/GREEN-прогон 27 кейсов × 3 уже выполнен на той же модели. Он
 **не прошёл release gate**: GREEN 25/27, reference-read 25/26 (96,2%),
@@ -134,28 +135,344 @@ reference уточняет выбор `КлючДанных`/`Поле`/`Пут�
 `fundamentals-module-and-api-boundaries`. Нужен run-level разбор; не считать
 успешные точечные прогоны заменой полного gate.
 
-1. В `CHANGELOG.md` и описании GitHub Release явно указать известное ограничение:
-   полный поведенческий gate не пройден; не представлять его как PASS.
-2. Повторить локальные проверки после обновления release-метаданных; проверить
-   diff и staging, не включать `vendor/agents-best-practices`.
-3. Создать release commit, тег `v0.12` и отправить их в `origin`.
-4. Дождаться GitHub Actions `Release BSP Skills`, проверить оба архива и
-   заполнить описание опубликованного GitHub Release результатами статических
-   проверок и точными результатами behavioral eval.
+Проверено 2026-10-02:
+- Commit и тег v0.12 существуют; `Release BSP Skills` и `Validate BSP skills`
+  завершились успешно на GitHub.
+- [Описание Release](https://github.com/brake71/1c-ssl-skills/releases/tag/v0.12)
+  содержит точные результаты и явное предупреждение о непройденном gate.
+- Оба опубликованных архива проверены по SHA256 из GitHub API, списку 29 файлов
+  (`skills/bsp` и оба установщика) и точному совпадению содержимого с тегом v0.12.
+  Этот релиз не требует повторной публикации.
+
+## Partial — устранить повреждение чтения в eval-окружении v0.13
+
+В старых и свежих JSONL-трассах обнаружен общий инфраструктурный фактор:
+`Get-Content -Encoding UTF8` читает файл корректно, но PowerShell выводит CP866,
+а Codex декодирует stdout как UTF-8. Чтение `print-reports.md` давало 13945
+символов замены `U+FFFD`; команда `rg` выводила кириллицу без повреждения.
+Исторические quality failures нельзя считать чистым измерением качества скила.
+
+Windows-команда runner теперь одинаково для RED/GREEN отключает профиль,
+задаёт UTF-8 для Python и инструктирует читать текст через `rg`/Python.
+Повреждённый вывод успешных команд классифицируется как инфраструктурный
+`tool_output_encoding`; он не должен превращаться в случайный quality PASS.
+Схема отчёта v4 и SHA256 runner запрещают resume старых несопоставимых результатов.
+Регрессии сначала воспроизвели ошибку, затем прошли после исправления.
+
+Новый RED/GREEN smoke `message-bound-to-field` на `gpt-6-luna medium` прошёл
+GREEN 1/1 с чтением reference и без повреждённых команд; RED 0/1.
+Отчёт: `.tmp/v0.13-utf8-message-smoke2.json`. Это проверка исправления окружения,
+не замена полного gate.
+
+Полная матрица 27 × 3 завершилась; исходный отчёт
+`.tmp/v0.13-utf8-full-3x.json` отметил 15 инфраструктурных ошибок. Разбор JSONL
+показал, что все они — одиночный `U+FFFD` у штатного маркера
+`... N bytes omitted ...` в больших UTF-8-выводах, а не прежняя порча CP866.
+Классификатор теперь исключает только этот пограничный символ; повреждение
+вне границы остаётся ошибкой. Также исправлен false negative scorer для
+правильной реализации hook с комментарием о запрете прямого вызова внутри BSL.
+Оба изменения сначала воспроизведены регрессиями; на этом шаге прошли 63 unit-теста.
+
+Offline replay исходных ответов и событий, без новых вызовов модели:
+`.tmp/v0.13-utf8-full-3x-replay.json` — GREEN 22/27, activation 25/26,
+reference-read 24/26, invalid/unsafe/forbidden/process/infrastructure ошибок 0;
+RED 14/27. Gate всё ещё FAIL. Отчёт хранит provenance исходного прогона и SHA256
+обоих вариантов runner; это не новый полный прогон на финальном runner.
+Повторный свежий smoke `.tmp/v0.13-utf8-final-smoke.json` дал GREEN 0/1:
+модель искала скил в неверном глобальном пути, не прочитала staged reference;
+кодировка и API-вызовы без ошибок. Долг автоматической активации не закрыт.
+
+## Done — независимое ревью инфраструктурного этапа
+
+Два read-only ревью (standards и consumer spec) подтвердили частичный статус
+работы: стабильность и переносимость ещё не доказаны. Исправлены замечания
+к read evidence: listing/count/quiet, путь в позиции шаблона `rg`, соседняя
+команда `echo` и пустой output не засчитываются. Поддержаны обычные печатающие
+Python `-c` readers; сохранено различие `rg -C` (контекст) и `-c` (счётчик).
+Исключение обрезки допускает только один пограничный `U+FFFD` на marker.
+Последующее независимое delta-ревью блокирующих проблем не нашло.
+
+Python cache исключён одновременно из staging и fingerprint: developer
+imports не должны менять состав проверяемого consumer-пакета. Итог: 68 unit
+PASS, coverage 662/662 и 24 references, semantic 0 ERROR / 0 WARN, dry-run PASS.
+Этап фиксируется отдельным частичным commit; push и релиз не выполняются.
+
+Native `skills/list` подтвердил enabled repo-scope `bsp` по staged-пути;
+диагностика model context показала корректные aliases и наличие host plugins.
+Каталог обнаружения работает, но не гарантирует правильный выбор модели.
+
+Два consumer-прогона 4 × 3 в private `TemporaryDirectory` дали raw FAIL, однако
+оказались инфраструктурно несопоставимыми: restricted token получает Access
+Denied при чтении действительного staged-пути, а PowerShell cwd становится
+каталогом установки shell. Эти отчёты не используются как quality verdict.
+Калибровка обычного каталога (`Path.mkdir`, наследуемые ACL) подтвердила cwd
+проекта и корректное чтение UTF-8. Повторный consumer smoke запускается в
+независимом git-root с одним README, без `src/cf` и developer docs.
+Windows UTF-8 developer instructions runner пока сохраняются: даже новый PASS
+нельзя выдавать за обычный неассистированный пользовательский запуск.
+
+## Partial — consumer smoke и исправления references
+
+Инфраструктурный commit `188487c` проверен в независимом README-only git-root
+с наследуемыми ACL: `.tmp/consumer-inherited-acl-3x.json`, GREEN 4/4 и все
+12 отдельных GREEN-запусков PASS. Это message, backup, dedup и negative plain
+BSL; автоматическая активация/чтение подтверждены для трёх scoped cases.
+Техническая Windows-инструкция чтения сохранялась; полный gate не проверен.
+
+Дальнейшие изменения исправили серверный контекст `ВызовСервера`, варианты
+срока кэша и глобальный контекст; выгрузка явно необязательна. В references
+добавлен каркас собственного вида команды с реальной структурой дерева
+источников, колонками, `Экспорт` и условием видимости, без зависимости от демо.
+
+Scorer теперь маскирует комментарии/строки для поиска реальных вызовов,
+проверяет кодовые требования с сохранением строковых аргументов и разделяет
+контекст соседних fences. Корректирующая вводная, предупреждение о другом
+API и объяснение отключённой регистрации не исключают правильный пример.
+Критерии записи/хука усилены; эквивалентные формулировки не требуют дословного
+порядка слов. Новые баги воспроизведены unit-регрессиями до исправления.
+
+История targeted consumer 3 × 3:
+
+- `.tmp/consumer-stage2-targeted-3x.json`: GREEN 1/3, gate FAIL, один реальный
+  вызов несуществующего модуля плюс false negatives критериев/scorer.
+- `.tmp/consumer-stage2-revised-3x.json`: GREEN 2/3, gate FAIL; правильная
+  серверная формулировка в обратном порядке не принималась, объяснение
+  «Ложь запрещает регистрацию» скрывало BSL. Эти ошибки scorer исправлены;
+  неполная диагностика неправильного имени не объявлена правильным ответом.
+- `.tmp/consumer-stage2-checked-3x.json`: GREEN 3/3 по majority, activation
+  3/3, reference-read 3/3, RED 1/3; invalid/unsafe/forbidden/process/infra 0.
+  Один инфраструктурный запуск hook повторён `--resume` на неизменённых
+  fingerprint и README-only fixture (с тем же git-root/path после cleanup).
+  До повтора `rg | Select-String` испортил вывод, несмотря на корректный ответ;
+  такой ответ не использован как PASS. Итоговый отчёт — resumed matrix,
+  не девять одновременно заново запущенных ответов.
+
+Отдельные GREEN ответы: update 3/3, hook 3/3, fundamentals 2/3.
+В failed fundamentals скил/reference не прочитаны, выдуман серверный вариант
+и не исправлен служебный; это реальный quality/activation debt, не ошибка
+scorer. Majority PASS не равен полной повторяемости или релизной готовности.
+Все прогоны использовали `gpt-6-luna medium`, технические UTF-8 инструкции
+runner и host environment; модель не читала developer sources.
+
+Независимые ревью подтвердили полезность критичных критериев и выявили
+comment-only PASS и скрытие неверного вызова предупреждением без имени
+модуля; обе ошибки закрыты регрессиями. Два замечания опровергнуты по
+источникам: БSL допускает пропуск необязательного позиционного параметра
+(стандарт 640 и реальный вызов БСП), а третий `Истина` в `Строки.Найти`
+включает подчинённые строки; в reference это дополнительно пояснено.
+
+Статические проверки: 78 unit PASS, coverage 662/662 и 24 references,
+semantic 0 ERROR / 0 WARN, dry-run 27 cases / 24 references, diff-check PASS.
+## Partial — полный consumer gate на `dca64bf`
+
+`.tmp/consumer-stage2-full-3x.json`: выполнены все RED/GREEN 27 × 3;
+**complete=false, gate FAIL**, так как 3 GREEN-запуска имеют
+`tool_output_encoding`. Из сводки исключены целиком эти 3 сценария:
+`save-attached-file-public-boundary`, `pd-destruction-date-public-boundary`,
+`contact-info-representation-public-boundary`. Во всех сбоях native `rg`
+передан в PowerShell `Select-String`, который перекодировал stdout.
+
+RED 13/27, GREEN 20/24 полных сценария; majority activation/reference-read
+23/23 scoped полных сценария. GREEN invalid/unsafe/forbidden/process/policy 0,
+quality failures 19, infrastructure 3. Majority quality не прошло у
+`update-safe-write-module-name`, `delete-marked-public-boundary`,
+`sms-public-wrapper-not-hook`, `fundamentals-module-and-api-boundaries`.
+Один из ответов fundamentals назвал `ВызовСервера` клиентскими методами;
+другой не дал требуемых полных имён. Update дважды молча исправил модуль,
+но назвал исходный неверный совет правильным. Эти ошибки не снимаются
+понижением требований.
+
+Все четыре fingerprint совпали с `dca64bf`; README-only fixture и отсутствие
+видимых developer sources подтверждены manifest. Отчёт оставлен исходным:
+resume не запущен, так как есть и ошибки качества. Это не unassisted consumer.
+
+При разборе SMS/delete-marked воспроизведён новый false negative: правильный
+BSL скрывается предупреждением о другом API, написанном без `()`, либо
+смешанной фразой «логин и пароль не нужны: используйте публичный API».
+Добавлен RED-capable regression с проверкой, что настоящий неверный вызов
+в том же блоке остаётся ошибкой. Исправление различает отрицательные clauses
+и положительную рекомендацию конкретного реального вызова. Детерминированная
+проверка шести сохранённых SMS/delete ответов теперь PASS; это локальный
+пересчёт для диагностики, **не новый behavioral PASS**. Исходный JSON не менялся.
+Windows-инструкция уточнена: native UTF-8 readers не передавать в PowerShell
+cmdlets; это дополнительная техническая помощь, а не факт о BSP или
+подсказка ответа. Полная матрица после изменения runner требует нового отчёта.
+
+На предыдущем checkpoint unit suite: 81 PASS. Независимая классификация десяти остальных
+единичных failures:
+
+- Реальное упущение `lock-form-fields`: не показан требуемый клиентский
+  вызов разрешения редактирования.
+- Реальная подмена задачи `mcd-check-public-boundary`: проверка подписи
+  вместо проверки доверенности в реестре.
+- Правильный ответ без активации/reference в `multilang-hook` и
+  `dedup-replace-links-public-boundary`; это behavioral debt, не scorer fix.
+- Правильный BSL скрыт в scheduled-job, backup, bp-redirect и contact-info;
+  `known_module_calls=[]` при наличии фактических публичных вызовов.
+- В print-object-registration второй правильный manager-block не
+  засчитан; в connected-command корректная фраза «БСП … вызывает его» /
+  «Напрямую вызывать … нельзя» не распознана текстовым шаблоном.
+
+Повторный диагностический пересчёт этих шести ответов после текущего
+SMS/delete fix всё ещё FAIL: устранение первой ошибки не закрывает остальные
+формы контекста. Требуются отдельные минимальные RED-регрессии; критерии
+реальных упущений сохраняются. Независимое ревью нового scorer обнаружило противоречивую рекомендацию того же API:
+положительная clause могла отменить явное «использовать не следует».
+Регрессия воспроизведена в обеих позициях fence и порядке clauses; исправление
+сохраняет запрет, если отрицательная clause называет фактический вызов,
+включая прежнюю clause вводного абзаца. Все четыре контрпримера отклоняются,
+шесть правильных SMS/delete ответов по-прежнему проходят offline-проверку.
+Контрольное ревью обнаружило вторую границу: исключение для реализации
+хука отменяло запрет фактического вызова внутри её тела. Четыре вложенных
+контрпримера добавлены до исправления (три были false PASS); исключение
+теперь действует только когда отрицательная clause не относится к вызову
+внутри тела. Unit suite и offline-проверка шести правильных ответов проходят.
+Изменения не закоммичены; неассистированный transport не проверен.
+
+## Candidate — этап 3 после независимых ревью
+
+- Переписана классификация отрицательных примеров: нужны явная метка,
+  запрет фактического вызова или относящееся к fence отрицательное пояснение.
+  Инцидентные замечания о параметрах, другом примере или клиент-серверном
+  варианте не скрывают правильный код. Положительный witness и hook exemption
+  удалены; обе опасные границы защищены тестами.
+- Все 24 сохранённых ответа восьми ранее ложно проваленных API-сценариев
+  проходят диагностический пересчёт. Старый full JSON не менялся; это не
+  свежий behavioral результат.
+- Multilang green3 в старом полном отчёте **реально прочитал** skill/reference
+  через `p=Path(...); print(p.read_text())` и вывод диапазона `t[i]`.
+  Ошибочное read-evidence исправлено ограниченным AST-анализом. Вывод пути,
+  числа, известного пустого чтения, изменённой фабрики, условного результата
+  или перенаправленного print не считается evidence. Dedup без чтения
+  остаётся настоящим activation failure.
+- Исправлен факт forms-validation: БСП создаёт команду/кнопку и назначает
+  имя действия, но обработчик добавляется прикладным кодом. Подтверждение:
+  глава 3 BSP311 раздел подключения запрета редактирования и CF служебная
+  `ПодготовитьФорму`. Проверка МЧД в реестре выделена отдельно от проверки
+  подписи по МЧД. Уточнены update/fundamentals и router.
+- Свежий `.tmp/consumer-release-candidate-targeted-3x.json`: 5/6 majority,
+  16/18 individual, activation/reference 6/6, ошибок API/кодировки 0.
+  Все пять сценариев кроме fundamentals проходят каждый повтор.
+- Дополнительный `.tmp/consumer-release-candidate-fundamentals-3x.json`
+  после уточнения полных имён: 1/3 native, gate FAIL. Ответ «имя ... неверно»
+  был ложно отклонён шаблоном отсутствующего модуля; эквивалентная диагностика
+  теперь принимается, а реальный пропуск имени базового модуля остаётся FAIL.
+  Не маскировать offline 2/3 как новый прогон.
+- Финальные static checks: 84 unit PASS, coverage 662/662, 24 references,
+  semantic 0 ERROR / 0 WARN, dry-run и diff-check PASS. Независимые ревью
+  references и scorer пройдены; review findings воспроизведены RED-тестами.
+- `.tmp/release-candidate-v0.13/`: ZIP/tar.gz по 29 файлов (skills/bsp +
+  установщики), hashes/побайтовое сравнение, install/update обоих установщиков
+  в локальные каталоги PASS. Manifest помечен candidate, не release-ready.
+- Новый полный `.tmp/consumer-release-candidate-full-3x.json` выполняется
+  без изменения runner/corpus/skill во время запуска. Следом требуется
+  отдельный non-resumable guidance-free installed-archive diagnostic;
+  helper `.tmp/run_guidance_free_probe.py` записывает удалённые cfg keys,
+  команды и собственный fingerprint, не объединяет метрики с RED/GREEN.
+- Всё остаётся локальным: нет tag, push или публикации, vendor нетронут.
+
+## Consumer checkpoint — 3bdd931 и ASCII bootstrap
+
+Полный `.tmp/consumer-release-candidate-full-3x.json` завершён без resume:
+complete=true, gate PASS, GREEN majority 26/27, individual 73/81,
+quality 75/81, majority activation/reference 26/26, invalid/unsafe/forbidden/
+process/infra 0; RED 14/27. Проверены все четыре fingerprint. Это assisted
+Windows profile с одинаковыми reader instructions для RED/GREEN.
+
+`.tmp/consumer-reader-guidance-free-3x.json`: без reader guidance все 9 BSP
+запусков infrastructure_failed из-за повреждённого stdout. Три plain-BSL
+ответа корректны, но diagnostic helper ошибочно передал require_reference=True
+без проверки scope; исходный отчёт сохранён, helper исправлен отдельно.
+
+`.tmp/consumer-reader-packaged-bootstrap-3x.json`: перенос guidance в русскоязычный
+SKILL/description уменьшил encoding до 3/12, но первое чтение оставалось
+небезопасным. `.tmp/consumer-reader-ascii-bootstrap-3x.json`: после ASCII-only
+маршрутизатора encoding/infra 0/12, majority 4/4, individual 11/12, BSP
+activation 9/9, reference evidence 8/9. Fundamentals run3 ответ правильный,
+но команды rg вернули общий exit1 (недоступные host-plugin paths или второй rg
+без совпадений), поэтому evidence conservatively не засчитан. Raw не пересчитан.
+
+Независимое ревью подтвердило сохранение всех 24 маршрутов и смыслов router;
+vendor finding отклонён: gitlink — пользовательский, не был staged/committed.
+Отдельный анализ classifiers показал две причины: слово НеверныйЛогинИлиПароль
+ошибочно маркировало BSL негативным, но в коде также была только заглушка
+обработки. Первая причина исправлена RED-регрессиями с полными словами вместо
+фрагментов; reference получил реальное исключение только при ошибке, а
+ОбновлениеНеТребуется трактуется штатно. Проверка обработчика должна принимать
+локальные aliases, сообщения/журнал и условное исключение, но не допускать
+безусловное исключение при успехе/штатном статусе. Проверка реализована
+ограниченным AST-анализом без выполнения BSL; source-call, aliases, вложенные
+Если/ИначеЕсли/Иначе и фактические реакции проверяются в одном fence для всех
+статусов. Заглушки, перенос evidence между fences и исключения на штатных
+статусах отвергаются. Финальное независимое review не воспроизвело блокеров.
+
+Проверки текущих bytes: 90 unit PASS, API 663/663, semantic 0 ERROR / 0 WARN,
+dry-run и diff-check PASS. Новое отрицательное API-утверждение подтверждено
+src/cf: предложенного метода в РаботаСКлассификаторамиВызовСервера нет.
+`.tmp/consumer-ascii-final-message-smoke.json`: native GREEN 1/1.
+`.tmp/consumer-ascii-final-classifiers-3x.json`: native GREEN 1/3, gate FAIL,
+обработка ошибки корректна 3/3. В одном ответе нет исходного полного имени,
+другой отклонён за естественный обратный порядок слов предупреждения.
+Последний false negative исправлен отдельным RED→GREEN-тестом; raw не пересчитан.
+
+Все предыдущие отчёты/архивы сохранены. Запущены новый полный 27 × 3
+`.tmp/consumer-ascii-final-full-3x.json` и отдельный guidance-free archive smoke
+`.tmp/consumer-reader-final-guidance-free-3x.json` на окончательных fingerprint.
+Guidance-free завершён: majority 4/4, individual 10/12, quality 11/12,
+BSP activation/reference 9/9, infrastructure 0/12. Fundamentals run3 пропустил
+два полных имени модулей; plain-BSL run1 ошибочно активировал скил при правильном
+ответе. Classifiers 3/3. Raw сохранён, hashes совпадают с final bytes.
+ZIP/tar.gz по 29 файлов побайтно проверены; install + update упакованными Bash
+и PowerShell установщиками в отдельных локальных путях с пробелами PASS.
+Полный native RED/GREEN завершён без resume: complete=true, gate PASS.
+GREEN majority 25/27, individual 72/81, quality 77/81, majority activation/
+reference 26/26; invalid/unsafe/forbidden/process/policy/infra 0. RED majority
+13/27, individual 36/81, invalid 4, unsafe 7, forbidden 2, infra 0.
+Все четыре fingerprint совпали с final bytes. Classifiers GREEN 3/3.
+
+Кандидат выполняет текущие gate, но не доказывает полную повторяемость:
+fundamentals 1/3 (в двух ответах пропущено по одному имени), plain-BSL 1/3
+(две лишние активации); по одному reference-read failure у long-operation,
+currency-rates и business-statistics. External-component run2 — пропущено
+предупреждение. PDn run2 правильно вызывает API и предупреждает о служебном
+альтернативном методе, но BSL исключён scorer: отдельный false-negative debt.
+Raw сохранён без пересчёта. Полный прогон assisted; archive diagnostic —
+ограниченный guidance-free, с ним метрики не объединяются.
+
+Готовность кандидата по gate подтверждена; публикация требует отдельного
+разрешения. Нет tag/push/release.
 
 ## Next — закрыть behavioral debt в v0.13
 
-1. Разобрать трассы девяти нестабильных/проваленных кейсов из полного отчёта;
-   отделить ошибки scorer/постановки от неверного API и пропуска reference.
-   Исправлять первопричину в маршрутизации, reference, case или scorer, не
-   ослабляя проверки.
-2. Повторить затронутые кейсы по 3 раза на `gpt-6-luna medium`; требовать
+1. Приоритет — автоматическое обнаружение project-scoped скила:
+   `backup-public-boundary` и `dedup-replace-links-public-boundary` не прочитали
+   назначенный reference по majority даже при правильном декодировании текста.
+   В свежем smoke модель искала `bsp` в несуществующем глобальном пути.
+   Проверять реальный skill catalog Codex и влияние сторонних host plugins;
+   не подменять автоматическую активацию явной подсказкой ответа в eval task.
+2. Разобрать оставшиеся quality failures: `update-safe-write-module-name`,
+   `connected-command-hook-boundary`, `fundamentals-module-and-api-boundaries`.
+   В первых двух есть корректные объяснения, не принятые узким regex
+   («не тот общий модуль», «напрямую вызывать нельзя»); подтвердить их
+   детерминированными регрессиями прежде чем менять критерии.
+   У fundamentals ответы пропускают требуемые полные имена модулей;
+   дополнительно обнаружено фактическое противоречие: reference называет
+   `ВызовСервера` клиентским модулем, тогда как XML
+   `ОбщегоНазначенияВызовСервера` и `БизнесПроцессыИЗадачиВызовСервера` задают
+   `Server=true`, `ClientManagedApplication=false`, `ServerCall=true`.
+   Документация главы 3 описывает флаг «Вызов сервера», но не подтверждает
+   клиентский контекст прежней строки reference. Контекст проверен и
+   формулировка исправлена во втором этапе выше; остаётся пропуск чтения
+   reference одним из трёх новых ответов.
+   Исправлять первопричину в маршрутизации, reference, case или scorer,
+   не ослабляя проверки.
+3. Повторить затронутые кейсы по 3 раза на `gpt-6-luna medium`; требовать
    majority pass и majority-read назначенного reference, с нулём
    `invalid_methods`.
-3. Запустить полную RED/GREEN-матрицу 27 кейсов × 3 на `gpt-6-luna medium`;
+4. Запустить полную RED/GREEN-матрицу 27 кейсов × 3 на `gpt-6-luna medium`;
    требовать 100% scoped case-majorities с чтением reference, GREEN gate и
    нулевые invalid/unsafe/forbidden/process/policy/infrastructure ошибки.
-4. После прохождения gate повторить unit-тесты, API coverage, semantic
+5. После прохождения gate повторить unit-тесты, API coverage, semantic
    validation, eval dry-run и `git diff --check`; затем фиксировать результаты
    в changelog будущего релиза.
 
