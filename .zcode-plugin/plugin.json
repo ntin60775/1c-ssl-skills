@@ -1,0 +1,6 @@
+{
+  "name": "1c-ssl-skills",
+  "version": "0.13.1",
+  "description": "Зеркало brake71/1c-ssl-skills (MIT): скилл bsp — публичный API БСП 3.1.11, сигнатуры, регионы, антипаттерны; сверка по XML-выгрузке проекта",
+  "skills": "./skills"
+}
