@@ -52,6 +52,58 @@ class EvalCorpusTests(unittest.TestCase):
         )
         self.assertEqual(unscoped, ["plain-bsl-no-bsp"])
 
+    def test_activation_corpus_has_independent_matrix_and_boundary_expectations(self):
+        cases = runner.load_cases(REPO_ROOT / "evals" / "activation-cases.json")
+        references, unscoped = runner.load_reference_matrix(
+            REPO_ROOT / "evals" / "activation-reference-matrix.json"
+        )
+        runner.validate_reference_matrix(cases, references, unscoped, SKILL_DIR / "references")
+        self.assertEqual(len(cases), 6)
+        self.assertEqual(sum(not c.should_trigger for c in cases), 3)
+        self.assertEqual(len(unscoped), 4)
+        self.assertIsNone(next(c.reference for c in cases if c.id == "other-version-api-boundary"))
+        for case in cases:
+            if case.id != "other-version-api-boundary":
+                self.assertNotIn("БСП 3.1.11", case.task)
+        names = {case.id: case for case in cases}
+        message = names["neutral-message-near-field"]
+        keyed = ('```bsl\nОтказ = Истина;\nОбщегоНазначения.СообщитьПользователю('
+                 '"Заполните организацию", Объект, "Организация");\n```')
+        self.assertTrue(runner.score_response(message, keyed, {})["quality_passed"])
+        self.assertFalse(runner.score_response(
+            message, keyed.replace('"Организация"', '"Контрагент"'), {}
+        )["quality_passed"])
+        platform = names["neutral-platform-exchange-registration"]
+        response = "```bsl\nПланыОбмена[ИмяПлана].ЗарегистрироватьИзменения(Узел, ДокументСсылка);\n```"
+        self.assertTrue(runner.score_response(platform, response, {})["passed"])
+        self.assertFalse(runner.score_response(
+            platform, response, {}, skill_activated=True, require_activation=True
+        )["passed"])
+        version = names["other-version-api-boundary"]
+        answer = "Доступна документация только 3.1.11; сигнатуру 3.2.1 нужно проверить отдельно."
+        self.assertTrue(runner.score_response(version, answer, {})["quality_passed"])
+        self.assertFalse(runner.score_response(version, "В БСП 3.2.1 точно такой же метод.", {})["passed"])
+        signature = (
+            "Документация БСП 3.1.11 содержит сигнатуру ниже; "
+            "её применимость к 3.2.1 подтвердить не могу.\n"
+            "```bsl\nОбщегоНазначения.СообщитьПользователю(\n"
+            "    Знач ТекстСообщенияПользователю, Знач КлючДанных = Неопределено) Экспорт\n```"
+        )
+        self.assertTrue(runner.score_response(version, signature, {})["quality_passed"])
+        cannot_confirm = (
+            "По материалам БСП 3.1.11 подтвердить ту же сигнатуру для 3.2.1 нельзя: "
+            "нужна документация нужной версии."
+        )
+        self.assertTrue(runner.score_response(version, cannot_confirm, {})["quality_passed"])
+        self.assertFalse(runner.score_response(
+            version, "По БСП 3.1.11 такую сигнатуру можно подтвердить и для 3.2.1.", {}
+        )["quality_passed"])
+        runnable = signature.replace(
+            "    Знач ТекстСообщенияПользователю, Знач КлючДанных = Неопределено) Экспорт",
+            "    \"Ошибка\", , \"Объект.Организация\");",
+        )
+        self.assertFalse(runner.score_response(version, runnable, {})["quality_passed"])
+
     def test_reference_matrix_rejects_missing_reference_and_unassigned_case(self):
         cases = runner.load_cases(REPO_ROOT / "evals" / "cases.json")
         references, unscoped = runner.load_reference_matrix(
@@ -567,6 +619,84 @@ class ResponseScoringTests(unittest.TestCase):
                 unsafe = response.replace("СтабильныйМетод();", "СтабильныйМетод();\nТестовыйМодуль.Опечатка();")
                 self.assertFalse(runner.score_response(self.case, unsafe, self.method_index)["passed"])
 
+    def test_post_code_note_about_repeated_validation_does_not_discard_valid_code(self):
+        response = (
+            "Для проверки используйте публичный метод:\n"
+            "```bsl\nТестовыйМодуль.СтабильныйМетод();\n```\n\n"
+            "Метод устанавливает Отказ. Обычно этот код размещают перед записью "
+            "и не вызывают процедуру повторно после неё."
+        )
+        score = runner.score_response(self.case, response, self.method_index)
+        self.assertTrue(score["passed"])
+        self.assertEqual(score["known_module_calls"], ["ТестовыйМодуль.СтабильныйМетод"])
+        unsafe = response.replace(
+            "СтабильныйМетод();", "СтабильныйМетод();\nТестовыйМодуль.Опечатка();"
+        )
+        unsafe_score = runner.score_response(self.case, unsafe, self.method_index)
+        self.assertFalse(unsafe_score["passed"])
+        self.assertEqual(unsafe_score["invalid_methods"], ["ТестовыйМодуль.Опечатка"])
+        for warning in (
+            "Этот код использовать нельзя.",
+            "Этот метод не следует вызывать.",
+            "Например, такой код использовать нельзя.",
+            "Такой пример не следует повторять.",
+            "Такой вызов не нужно использовать.",
+        ):
+            with self.subTest(warning=warning):
+                block = "```bsl\nТестовыйМодуль.СтабильныйМетод();\n```\n\n" + warning
+                self.assertEqual(runner.executable_bsl_blocks(block), [])
+
+    def test_example_of_another_method_or_failure_does_not_discard_public_code(self):
+        block = "```bsl\nТестовыйМодуль.СтабильныйМетод();\n```"
+        notes = (
+            "Нет стабильного серверного метода. Служебные методы, например, "
+            "`ДругойМетод`, не запускают операцию; вызывать такие методы не следует.",
+            "Нельзя скрывать ошибку записи: например, отсутствие прав на каталог. "
+            "Этот вариант не подавляет ошибки.",
+        )
+        for note in notes:
+            with self.subTest(note=note):
+                response = block + "\n\n" + note
+                score = runner.score_response(self.case, response, self.method_index)
+                self.assertTrue(score["passed"])
+                self.assertEqual(score["known_module_calls"], ["ТестовыйМодуль.СтабильныйМетод"])
+                unsafe = response.replace("СтабильныйМетод();", "СтабильныйМетод();\nТестовыйМодуль.Опечатка();")
+                self.assertEqual(runner.score_response(self.case, unsafe, self.method_index)["invalid_methods"],
+                                 ["ТестовыйМодуль.Опечатка"])
+
+    def test_warning_after_code_about_other_module_does_not_hide_recommendation(self):
+        block = "```bsl\nТестовыйМодуль.СтабильныйМетод();\n```"
+        for warning in (
+            "Ложный очевидный вариант — `ДругойМодуль.СтабильныйМетод(...)`: "
+            "такого метода БСП нет. Пользуйтесь платформенным API.",
+            "**Не перепутайте:** `ДругойМодуль.СтабильныйМетод(...)` — "
+            "ложный очевидный API; используйте платформенный метод.",
+            "`ТестовыйМодуль.СтабильныйМетод` — стабильный публичный API БСП 3.1.11. "
+            "Вызов `ДругойМодуль.СтабильныйМетод` из прикладного кода использовать "
+            "не следует: это служебный модуль.",
+            "`ДругойМодуль` — служебный модуль для серверных вызовов с клиента. "
+            "Его одноимённый метод не является стабильным прикладным API, и "
+            "обратная совместимость для таких методов не гарантируется. "
+            "В серверном контексте используйте `ТестовыйМодуль.СтабильныйМетод`. "
+            "Результат готов.",
+        ):
+            response = block + "\n\n" + warning
+            with self.subTest(warning=warning):
+                self.assertTrue(runner.score_response(self.case, response, self.method_index)["passed"])
+                self.assertEqual(runner.executable_bsl_blocks(response), ["ТестовыйМодуль.СтабильныйМетод();\n"])
+                invented = response.replace("СтабильныйМетод();", "СтабильныйМетод();\nТестовыйМодуль.Опечатка();")
+                self.assertEqual(runner.score_response(self.case, invented, self.method_index)["invalid_methods"],
+                                 ["ТестовыйМодуль.Опечатка"])
+        for warning in (
+            "Ложный очевидный вариант — `ТестовыйМодуль.СтабильныйМетод(...)`: "
+            "этот метод использовать нельзя.",
+            "**Не перепутайте:** `ТестовыйМодуль.СтабильныйМетод(...)` — "
+            "ложный API, так вызывать нельзя.",
+            "`ТестовыйМодуль` — служебный модуль. Его методы вызывать не следует.",
+        ):
+            with self.subTest(warning=warning):
+                self.assertEqual(runner.executable_bsl_blocks(block + "\n\n" + warning), [])
+
     def test_unqualified_warning_does_not_hide_invalid_call_in_another_fence(self):
         response = (
             "```bsl\nТестовыйМодуль.СтабильныйМетод();\n```\n\n"
@@ -873,6 +1003,106 @@ class CorpusCriteriaTests(unittest.TestCase):
     def case(case_id):
         return next(case for case in runner.load_cases(runner.DEFAULT_CASES) if case.id == case_id)
 
+    def test_scheduled_job_requires_struct_in_code_and_rejects_invented_factory(self):
+        case = self.case("scheduled-job-module-suffix")
+        correct = (
+            "```bsl\n"
+            "ПараметрыЗадания = Новый Структура;\n"
+            "ПараметрыЗадания.Вставить(\"Метаданные\", Метаданные.РегламентныеЗадания.МояЗадача);\n"
+            "Задание = РегламентныеЗаданияСервер.ДобавитьЗадание(ПараметрыЗадания);\n"
+            "```"
+        )
+        self.assertTrue(runner.score_response(case, correct, {})["passed"])
+        invented = correct.replace(
+            "ПараметрыЗадания = Новый Структура;",
+            "ПараметрыЗадания = РегламентныеЗаданияСервер.ПараметрыДобавленияЗадания();",
+        )
+        prose_only = "ПараметрыЗадания = Новый Структура — вариант из справки.\n" + invented
+        self.assertFalse(runner.score_response(case, prose_only, {})["passed"])
+        application = correct.replace(
+            "```bsl\n", "```bsl\nМоиРегламентныеЗадания.ПодготовитьМетаданные();\n"
+        )
+        self.assertTrue(runner.score_response(case, application, {})["passed"])
+        warning = correct + (
+            "\nРегламентныеЗаданияСервер.ПараметрыДобавленияЗадания() "
+            "не существует в БСП 3.1.11."
+        )
+        self.assertTrue(runner.score_response(case, warning, {})["passed"])
+
+    def test_lock_form_rejects_absent_bsp_module_without_blocking_application_modules(self):
+        case = self.case("lock-form-fields")
+        correct = (
+            "```bsl\n"
+            "ЗапретРедактированияРеквизитовОбъектов.ЗаблокироватьРеквизиты(ЭтаФорма);\n"
+            "ЗапретРедактированияРеквизитовОбъектовКлиент."
+            "РазрешитьРедактированиеРеквизитовОбъекта(ЭтаФорма);\n"
+            "```"
+        )
+        self.assertTrue(runner.score_response(case, correct, {})["passed"])
+        invented = correct.replace(
+            "```bsl\n",
+            "```bsl\nУправлениеБлокировкойРеквизитовФормыКлиентСервер."
+            "ОчиститьБлокировкуРеквизитовФормы(ЭтаФорма);\n",
+        )
+        invented_score = runner.score_response(case, invented, {})
+        self.assertFalse(invented_score["passed"])
+        self.assertTrue(invented_score["forbidden_hits"])
+        application = correct.replace(
+            "```bsl\n", "```bsl\nОбработчикиЗаказовКлиент.ОбновитьФорму(ЭтаФорма);\n"
+        )
+        self.assertTrue(runner.score_response(case, application, {})["passed"])
+        warning = correct + "\nМодуля УправлениеБлокировкойРеквизитовФормыКлиентСервер нет в БСП."
+        self.assertTrue(runner.score_response(case, warning, {})["passed"])
+
+    def test_lock_form_rejects_array_constructor_with_string_elements(self):
+        case = self.case("lock-form-fields")
+        response = (
+            "```bsl\n"
+            "Функция ПолучитьБлокируемыеРеквизитыОбъекта() Экспорт\n"
+            "    Возврат Новый Массив(\"Валюта\", \"Организация\");\n"
+            "КонецФункции\n"
+            "ЗапретРедактированияРеквизитовОбъектов.ЗаблокироватьРеквизиты(ЭтаФорма);\n"
+            "ЗапретРедактированияРеквизитовОбъектовКлиент."
+            "РазрешитьРедактированиеРеквизитовОбъекта(ЭтаФорма);\n"
+            "```"
+        )
+        self.assertFalse(runner.score_response(case, response, {})["passed"])
+        correct = response.replace(
+            'Возврат Новый Массив("Валюта", "Организация");',
+            'Реквизиты = Новый Массив;\n'
+            '    Реквизиты.Добавить("Валюта");\n'
+            '    Реквизиты.Добавить("Организация");\n'
+            '    Возврат Реквизиты;',
+        )
+        self.assertTrue(runner.score_response(case, correct, {})["passed"])
+
+    def test_attached_file_accepts_guard_for_empty_binary_without_inverting_guard(self):
+        case = self.case("save-attached-file-public-boundary")
+        prefix = "Служебный метод вызывать из прикладного кода не следует.\n"
+        code = '''```bsl
+ДвоичныеДанные = РаботаСФайлами.ДвоичныеДанныеФайла(Файл, Ложь);
+Если Не ЗначениеЗаполнено(ДвоичныеДанные) Тогда
+    Возврат;
+КонецЕсли;
+ДвоичныеДанные.Записать(ПутьНаСервере);
+```'''
+        self.assertTrue(runner.score_response(case, prefix + code, {})["passed"])
+        self.assertFalse(runner.score_response(
+            case, prefix + code.replace("Если Не ЗначениеЗаполнено", "Если ЗначениеЗаполнено"), {}
+        )["passed"])
+        wrong_arg = code.replace("ДвоичныеДанныеФайла(Файл, Ложь)", "ДвоичныеДанныеФайла(Файл)")
+        self.assertFalse(runner.score_response(case, prefix + wrong_arg, {})["passed"])
+        named = code.replace("ДвоичныеДанные =", "ДанныеФайла =")
+        named = named.replace("ЗначениеЗаполнено(ДвоичныеДанные)", "ЗначениеЗаполнено(ДанныеФайла)")
+        named = named.replace("ДвоичныеДанные.Записать", "ДанныеФайла.Записать")
+        named = named.replace("Если Не ЗначениеЗаполнено(ДанныеФайла) Тогда",
+                              "Если ДанныеФайла = Неопределено Тогда")
+        self.assertTrue(runner.score_response(case, prefix + named, {})["passed"])
+        self.assertFalse(runner.score_response(
+            case, prefix + named.replace("ДанныеФайла = Неопределено",
+                                         "ДанныеФайла <> Неопределено"), {}
+        )["passed"])
+
     def test_safe_write_accepts_equivalent_module_correction(self):
         case = self.case("update-safe-write-module-name")
         response = (
@@ -965,6 +1195,28 @@ class CorpusCriteriaTests(unittest.TestCase):
                 "ОбщегоНазначенияВызовСервера — серверный модуль с разрешённым вызовом с клиента.", server_phrase
             )
             self.assertTrue(runner.score_response(fundamental, variant, {})["passed"])
+
+    def test_destruction_date_accepts_equivalent_early_return_not_inverted_result(self):
+        case = self.case("pd-destruction-date-public-boundary")
+        prefix = "Служебный метод возвращает плановый срок хранения, не дату факта.\n"
+        code = '''```bsl
+&НаСервере
+Функция ДатаУничтоженияСубъекта(Субъект)
+    ДатаУничтожения = ЗащитаПерсональныхДанных.ДатаУничтоженияДанныхСубъекта(Субъект);
+    Если ДатаУничтожения = Дата(1, 1, 1) Тогда
+        Возврат Неопределено; // записи нет
+    КонецЕсли;
+    Возврат ДатаУничтожения;
+КонецФункции
+```'''
+        self.assertTrue(runner.score_response(case, prefix + code, {})["passed"])
+        wrong = code.replace("Возврат Неопределено;", "Возврат ДатаУничтожения;")
+        wrong = wrong.replace("КонецЕсли;\n    Возврат ДатаУничтожения;",
+                              "КонецЕсли;\n    Возврат Неопределено;")
+        self.assertIn("КонецЕсли;\n    Возврат Неопределено;", wrong)
+        self.assertFalse(runner.score_response(case, prefix + wrong, {})["passed"])
+        prose_only = prefix + "ДатаУничтожения <> Дата(1, 1, 1)\n" + wrong
+        self.assertFalse(runner.score_response(case, prose_only, {})["passed"])
 
     def test_hook_warning_accepts_reverse_word_order_without_allowing_direct_call(self):
         case = self.case("connected-command-hook-boundary")
@@ -1113,6 +1365,26 @@ class CorpusCriteriaTests(unittest.TestCase):
             with self.subTest(warning=warning):
                 self.assertTrue(runner.score_response(case, warning + code, {})["passed"])
 
+    def test_classifier_absent_method_accepts_natural_denial_not_positive_claim(self):
+        case = self.case("classifiers-update-public-boundary")
+        code = ('\n```bsl\nРезультат = РаботаСКлассификаторами.'
+                'ОбновитьКлассификаторы(Идентификаторы);\n'
+                'Сообщить(Результат.КодОшибки);\n```')
+        actual = (
+            "Совет вызвать РаботаСКлассификаторамиВызовСервера."
+            "ОбновитьКлассификаторы(Идентификаторы) неверен: такого метода "
+            "в этом модуле БСП 3.1.11 нет."
+        )
+        self.assertTrue(runner.score_response(case, actual + code, {})["passed"])
+        wrong = actual.replace("такого метода в этом модуле БСП 3.1.11 нет",
+                               "такой метод в этом модуле БСП 3.1.11 есть")
+        self.assertFalse(runner.score_response(case, wrong + code, {})["passed"])
+        unrelated = (
+            "РаботаСКлассификаторамиВызовСервера — публичный метод; "
+            "в другом модуле такого метода нет."
+        )
+        self.assertFalse(runner.score_response(case, unrelated + code, {})["passed"])
+
     def test_error_policy_keeps_fences_branches_and_effect_locations_independent(self):
         rule = self.case("classifiers-update-public-boundary").error_handling_rule
         source = "Результат = РаботаСКлассификаторами.ОбновитьКлассификаторы(Идентификаторы);\n"
@@ -1150,6 +1422,20 @@ class CorpusCriteriaTests(unittest.TestCase):
         self.assertFalse(runner.error_handling_rule_satisfied([source +
             ("Если Не ПустаяСтрока(Результат.КодОшибки) Тогда\n" * 40) +
             "Сообщить(Результат.КодОшибки);\n" + ("КонецЕсли;\n" * 40)], rule))
+
+    def test_fundamentals_accepts_server_execution_without_client_only_claim(self):
+        case = self.case("fundamentals-module-and-api-boundaries")
+        text = '''ОбщегоНазначения — сервер; ОбщегоНазначенияКлиент — клиент.
+ОбщегоНазначенияКлиентСервер — общие алгоритмы без обращения к БД.
+Модуль ОбщегоНазначенияВызовСервера тоже исполняется на сервере: клиент инициирует вызов.
+ОбщегоНазначенияСлужебный не существует; есть ОбщегоНазначенияСлужебныйКлиентСервер.
+ПрограммныйИнтерфейс — публичный; СлужебныйПрограммныйИнтерфейс — служебный;
+УстаревшиеПроцедурыИФункции — устаревший.
+Для служебных методов обратная совместимость не гарантируется.'''
+        self.assertTrue(runner.score_response(case, text, {})["passed"])
+        client_only = text.replace("тоже исполняется на сервере",
+                                   "не исполняется на сервере, это клиентский модуль")
+        self.assertFalse(runner.score_response(case, client_only, {})["passed"])
 
     def test_fundamentals_requires_server_context_for_server_call_module(self):
         case = self.case("fundamentals-module-and-api-boundaries")

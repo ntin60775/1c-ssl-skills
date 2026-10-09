@@ -1,6 +1,6 @@
 ---
 name: bsp
-description: "Разработка и ревью прикладного кода 1С с Библиотекой стандартных подсистем (БСП) 3.1.11. Используй при выборе общих модулей и публичных методов БСП, проверке сигнатур и регионов API, генерации BSL-кода для длительных и регламентных заданий, обмена, печати, файлов, доступа, обновления, ЭП/МЧД и других подсистем БСП; также когда нужно отличить стабильный API от служебного, устаревшего или модуля *Переопределяемый. Не используй для задач только по синтаксису платформы 1С, не связанных с БСП."
+description: "Verified 1C:BSP 3.1.11 APIs and integration workflows. Activate for BSP module/API selection or standard-subsystem integration, including form-field validation messages and safe upgrade writes. Covers jobs, exchange, printing, files, access, upgrades, signatures, localization and classifiers. Native platform plan-of-exchange manager registration, ordinary BSL functions and form-element property edits without BSP integration do not need this skill. When asked about another BSP version, use it only to state the 3.1.11 boundary, not to transfer unverified signatures. Windows: use native rg or Python UTF-8 stdout to read references."
 when_to_use: "Нужно вызвать подсистему БСП из прикладного кода, выбрать правильный публичный метод/общий модуль, сверить сигнатуру или регион API, решить — стабильный API или служебный/устаревший."
 license: "MIT"
 ---
@@ -32,19 +32,25 @@ global shell settings.
 
 Scope: apply this workflow to BSP integration or API review. Answer standalone
 BSL/platform questions directly when they need no BSP library or subsystem;
-the presence of BSL files alone is not an integration task.
+native plan-of-exchange manager change registration is platform-only. The
+presence of BSL files or a form element alone is not an integration task.
 
 1. Select one primary reference from the task table. Add a second only for a
    genuinely cross-cutting task, such as printing in a background job.
 2. Open the selected reference before answering; the router and remembered
    platform knowledge are insufficient. Locate the scenario using `rg -n`
    headings/keywords, then read its rules, signature, example and pitfalls
-   with native rg context options or Python. This step is complete when the
+   with native rg context options or Python. If a read fails, retry the
+   absolute reference path built from the `SKILL.md` path you just opened,
+   not another skill directory. If still unreadable, state that the BSP call
+   is unverified instead of guessing it. This step is complete when the
    proposed answer is checked against that section. Read the whole file only
    if section reading is unavailable; avoid unrelated material.
-3. If the user proposes a call or rule, check its original full `Module.Method`
-   name and purpose. Explicitly identify any mismatch: a corrected example
-   does not make the original advice correct.
+3. If the user asks about another BSP version, state that 3.1.11 references
+   cannot verify it; request that version's documentation/export and do not
+   show a runnable 3.1.11 signature as if it applied to that version. If the
+   user proposes a call or rule, check its original full `Module.Method` name
+   and purpose. Identify mismatches explicitly.
 4. Prefer the stable public programmatic-interface region. Internal or
    deprecated APIs require an explicit warning and no public alternative.
    Show overridable-module hooks as implementations: BSP calls them;
