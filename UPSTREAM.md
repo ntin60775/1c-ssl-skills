@@ -37,3 +37,5 @@ python3 <1c-zcode>/scripts/lint_skill_frontmatter.py skills/
 |---|---|---|---|
 | 2026-10-01 | `3785579` (v0.12) | v0.12 | создание зеркала: frontmatter + deploy.json + UPSTREAM.md |
 | 2026-10-04 | `c5585f33` (v0.13) | v0.13 | merge апстрима; тело bsp = ASCII-роутер v0.13, наш frontmatter сохранён; openai.yaml (новый у апстрима) снят; submodule vendor/ вне маппинга deploy |
+| 2026-10-09 | `fd26aae` (v0.14) | v0.14 | merge апстрима; наш frontmatter сохранён поверх нового description апстрима (рус→англ); openai.yaml у апстрима пересоздан — в зеркале по-прежнему отсутствует; scripts/bsp_api.py не менялся |
+| 2026-10-09 | — | — | релиз зеркала v0.14.1: номер с точечной единицей — не занимать минор апстрима (как v0.13.1) |
