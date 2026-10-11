@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Iterator
 
 
@@ -47,7 +47,7 @@ DEFAULT_SKILL = REPO_ROOT / "skills" / "bsp"
 DEFAULT_WORKDIR = REPO_ROOT / "src"
 DEFAULT_BSL_SRC = REPO_ROOT / "src" / "cf"
 DEFAULT_MODEL = "gpt-5.6-luna"
-REPORT_SCHEMA_VERSION = 4
+REPORT_SCHEMA_VERSION = 5
 SKILL_CACHE_PATTERNS = ("__pycache__", "*.pyc", "*.pyo")
 WINDOWS_READING_INSTRUCTIONS = (
     "Text files are UTF-8. On Windows, read them using rg -n . -- PATH "
@@ -460,6 +460,18 @@ def python_reader_targets(arguments: list[str]) -> list[str]:
             return ("const", node.value)
         if isinstance(node, ast.Name):
             return names.get(node.id)
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            source = evaluate(node.value, names)
+            if source and source[0] == "path":
+                return ("path", frozenset(str(PurePosixPath(path.replace("\\", "/")).parent)
+                                         for path in source[1]))
+            return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left, right = evaluate(node.left, names), evaluate(node.right, names)
+            if left and left[0] == "path" and right and right[0] == "const" and isinstance(right[1], str):
+                return ("path", frozenset(str(PurePosixPath(path.replace("\\", "/")) / right[1])
+                                         for path in left[1]))
+            return None
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Name) and func.id == "Path" and factories["Path"] and node.args:
@@ -631,6 +643,41 @@ def python_reader_targets(arguments: list[str]) -> list[str]:
     return list(dict.fromkeys(targets))
 
 
+def _reader_failure_paths(output: str) -> list[str]:
+    """Extract paths explicitly named by common file-reader failures."""
+    patterns = (
+        re.compile(
+            r"^(?:rg|grep|cat|type|Get-Content|Select-String)\s*:\s*"
+            r"(?P<path>(?:[A-Za-z]:[\\/])?[^:\r\n]+):\s*"
+            r"(?:No such file or directory|Permission denied|Access is denied|"
+            r"Не удается найти|Не удаётся найти|Отказано в доступе|"
+            r"[^\r\n]*\(os error \d+\))",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^(?:FileNotFoundError|PermissionError):.*?:\s*"
+            r"['\"](?P<path>.+?)['\"]\s*$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^(?:Get-Content|Select-String)\s*:\s*Cannot find path\s+"
+            r"['\"](?P<path>.+?)['\"]\s+because\b",
+            re.IGNORECASE,
+        ),
+    )
+    # PowerShell colours stderr even with capture_output; normalize diagnostics only.
+    # Keep the original tool output/commands intact for receipts and other checks.
+    diagnostic_output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    paths = []
+    for line in diagnostic_output.splitlines():
+        for pattern in patterns:
+            match = pattern.match(line.strip())
+            if match:
+                paths.append(match.group("path"))
+                break
+    return paths
+
+
 def skill_activation_evidence(
     events: Iterable[dict], skill_name: str, reference: str | None = None
 ) -> list[str]:
@@ -646,6 +693,17 @@ def skill_activation_evidence(
         path_pattern = re.compile(
             rf"(?<![a-z0-9_.-]){skill_path}"
             rf"(?:skill\.md|references/[a-z0-9_-]+\.md)(?![a-z0-9_.-])"
+        )
+
+    def normalized_target(path: str) -> str:
+        return re.sub(r"/+", "/", path.replace("\\", "/").lower()).removeprefix("./")
+
+    def same_target(left: str, right: str) -> bool:
+        left, right = normalized_target(left), normalized_target(right)
+        return (
+            left == right
+            or left.endswith("/" + right)
+            or right.endswith("/" + left)
         )
 
     evidence = []
@@ -672,6 +730,7 @@ def skill_activation_evidence(
                 body = shell_arguments[command_index + 1]
             except (ValueError, StopIteration, IndexError):
                 continue
+        failure_paths = _reader_failure_paths(str(item.get("aggregated_output", "")))
         for read in READ_COMMAND_RE.finditer(body):
             segment = read_command_segment(body, read.end())
             reader = read.group("reader").lower()
@@ -683,10 +742,19 @@ def skill_activation_evidence(
                     targets = python_reader_targets(shlex.split(segment))
                 elif reader == "select-string" and re.search(r"(?:^|\s)-(?:list|quiet)\b", segment, re.IGNORECASE):
                     continue
+                else:
+                    targets = shlex.split(segment.replace("\\", "/"))
             except ValueError:
                 continue
-            if not any(path_pattern.search(re.sub(r"/+", "/", target.replace("\\", "/").lower()))
-                       for target in targets):
+            matched_targets = [
+                target for target in targets
+                if path_pattern.search(normalized_target(target))
+            ]
+            readable_targets = [
+                target for target in matched_targets
+                if not any(same_target(target, failed_path) for failed_path in failure_paths)
+            ]
+            if not readable_targets:
                 continue
             if command not in evidence:
                 evidence.append(command)
@@ -826,9 +894,18 @@ def negative_example_context(context: str, code_syntax: str) -> bool:
         r"быть\s+не\s+долж", context, re.I
     ):
         return True
-    deictic = re.search(r"\bэтот\s+(?:метод|вызов|код|пример)\b", context, re.I)
+    # An instruction about extra arguments does not prohibit invoking the API.
+    # Remove only that local predicate; retain any independent call prohibition.
+    argument_scoped = re.sub(
+        r"\bв\s+этот\s+(?:метод|вызов)\s+передава\w*\s+"
+        r"не\s+(?:нужно|следует|надо|требуется)\b", "", context, flags=re.I,
+    )
+    if not NEGATIVE_BLOCK_RE.search(argument_scoped):
+        return False
+    deictic = re.search(r"\bэтот\s+(?:метод|вызов|код|пример)\b", argument_scoped, re.I)
     if not deictic:
         return False
+    context = argument_scoped
     if re.search(r"\bэтот\s+код\b", deictic.group(), re.I):
         # "This code belongs before writing; don't invoke the procedure again"
         # warns about a separate action, not about the recommended snippet.
@@ -906,8 +983,13 @@ def executable_bsl_blocks(response: str) -> list[str]:
         sentences = re.split(r"(?<=[.!?])\s+", immediate_prefix)
         # A correction can contain "the advice is wrong" before the actual
         # recommendation. Use its nearest sentence, except connecting labels.
-        if sentences and not re.fullmatch(r"(?:в частности|например)\s*[:.]?", sentences[-1], re.I):
-            immediate_prefix = sentences[-1]
+        if sentences:
+            if re.fullmatch(r"(?:в частности|например)\s*[:.]?", sentences[-1], re.I):
+                # A connecting label inherits only its nearest sentence, not
+                # an earlier denial about a different method in the paragraph.
+                immediate_prefix = " ".join(sentences[-2:])
+            else:
+                immediate_prefix = sentences[-1]
         next_start = matches[index + 1].start() if index + 1 < len(matches) else len(response)
         suffix = response[match.end():min(next_start, match.end() + 320)]
         immediate_suffix = re.split(r"\n\s*\n", suffix.lstrip())[0]
@@ -1509,6 +1591,8 @@ def infrastructure_reason(execution: dict) -> str | None:
     """Return a stable category for failures outside skill-content quality."""
     if execution.get("timed_out"):
         return "timeout"
+    if execution.get("native_isolation_reasons"):
+        return "native_isolation"
     if execution.get("tool_policy_blocked"):
         return "sandbox_policy"
     if execution.get("tool_output_decode_errors"):
@@ -1745,6 +1829,8 @@ def print_summary(report: dict) -> None:
             f"policy-blocked={summary['tool_policy_blocks']} tokens="
             f"{summary['input_tokens'] + summary['output_tokens']}"
         )
+    if "isolation_gate" in report:
+        print(f"Native isolation gate: {'PASS' if report['isolation_gate']['passed'] else 'FAIL'}")
     if "green" in report["phases"]:
         print(f"GREEN gate: {'PASS' if report['gate']['passed'] else 'FAIL'}")
         for reason in report["gate"]["reasons"]:
@@ -1764,6 +1850,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dir", default=str(DEFAULT_WORKDIR), help="Codex working directory")
     parser.add_argument("--bsl-src", default=str(DEFAULT_BSL_SRC), help="Configuration root with CommonModules")
     parser.add_argument("--cdx", default="cdx", help="Codex launcher command (default: cdx)")
+    parser.add_argument("--transport", choices=("exec", "native"), default="exec",
+                        help="native: opt-in app-server profile with same-process per-turn inventory")
+    parser.add_argument("--auth-file", help="native only: existing ChatGPT auth.json outside consumer root")
     parser.add_argument(
         "--model", default=DEFAULT_MODEL,
         help=f"Exact model id (default: {DEFAULT_MODEL})",
@@ -1793,6 +1882,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    native = None
+    native_auth = None
     try:
         if args.runs < 1:
             raise EvalError("--runs must be at least 1")
@@ -1849,8 +1940,32 @@ def main() -> None:
             report_path = artifact_dir / "report.json"
 
         phases = ["red", "green"] if args.phase == "both" else [args.phase]
+        if args.transport == "native":
+            if __package__:
+                from . import native_eval as native
+            else:
+                import native_eval as native
+            if args.phase != "both":
+                raise EvalError("Native isolation requires --phase both")
+            native.probe.validate_workdir(workdir, report_path)
+            if any(native.probe.is_linked(path) for path in (stage_target, stage_target.parent, stage_target.parent.parent)):
+                raise EvalError("Refusing native staging through linked paths")
+            if not args.dry_run:
+                auth_path = Path(args.auth_file).resolve() if args.auth_file else Path(
+                    os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
+                ) / "auth.json"
+                if auth_path.resolve().is_relative_to(workdir):
+                    raise EvalError("Native authentication source must be outside consumer root")
+                native_auth = native.load_auth(auth_path)
+        elif args.auth_file:
+            raise EvalError("--auth-file is only supported with --transport native")
         report_settings = {
             "launcher": cdx,
+            "transport": args.transport,
+            "transport_profile": native.PROFILE if native else "exec",
+            "native_helper_sha256": file_sha256(Path(native.__file__)) if native else None,
+            "native_probe_sha256": file_sha256(Path(native.probe.__file__)) if native else None,
+            "auth_identity_sha256": native.auth_identity(native_auth) if native_auth else None,
             "model": args.model,
             "reasoning_effort": args.reasoning_effort,
             "skill": str(skill_dir),
@@ -1879,6 +1994,7 @@ def main() -> None:
             print(f"BSL modules indexed: {len(method_index)}")
             print(f"Launcher: {cdx}")
             print(f"Model: {args.model}")
+            print(f"Transport: {args.transport}")
             print(f"GREEN staging target: {stage_target}")
             return
 
@@ -1904,66 +2020,108 @@ def main() -> None:
                 "report_path": str(report_path),
             }
 
-        for phase in phases:
-            context = staged_skill(skill_dir, stage_target) if phase == "green" else _null_context()
-            with context:
-                def execute(case: EvalCase, run_number: int) -> dict:
-                    print(
-                        f"[{phase.upper()}] {case.id} run {run_number}/{args.runs}",
-                        flush=True,
-                    )
-                    execution = run_cdx(
-                        cdx, case, workdir, artifact_dir, phase, run_number,
-                        args.model, args.reasoning_effort, args.timeout, skill_name,
-                    )
-                    execution["score"] = score_response(
-                        case,
-                        execution["response"],
-                        method_index,
-                        skill_activated=execution["skill_activated"],
-                        require_activation=phase == "green",
-                        reference_read=execution["expected_reference_read"],
-                        require_reference=(
-                            phase == "green" and case.should_trigger and bool(case.reference)
-                        ),
-                    )
-                    execution["infrastructure_reason"] = infrastructure_reason(execution)
-                    execution["status"] = execution_status(execution)
-                    return execution
-
-                def save_progress(
-                    _case_index: int,
-                    _run_index: int,
-                    matrix: list[list[dict | None]],
-                ) -> None:
-                    phase_cases = phase_case_records(cases, matrix, args.runs)
-                    report["phases"][phase] = {
-                        "run_matrix": {
-                            case.id: matrix[index] for index, case in enumerate(cases)
-                        },
-                        "cases": phase_cases,
-                        "summary": summarize_phase(phase_cases),
-                    }
-                    atomic_write_json(report_path, report)
-
-                stored_runs = report.get("phases", {}).get(phase, {}).get("run_matrix")
-                initial_matrix = resume_run_matrix(cases, args.runs, stored_runs)
-                run_matrix = execute_run_matrix(
-                    cases, args.runs, args.jobs, execute,
-                    on_run_complete=save_progress,
-                    initial_matrix=initial_matrix,
+        # A failed resume must not leave stale PASS gates beside complete=False.
+        report.pop("gate", None)
+        report.pop("isolation_gate", None)
+        report.pop("native_restored_red", None)
+        report.pop("native_warmup_red", None)
+        atomic_write_json(report_path, report)
+        home_context = native.authenticated_home(native_auth) if native else _null_context()
+        with home_context as native_home:
+            if native:
+                # Cold concurrent app-servers race SQLite bootstrap in a fresh
+                # CODEX_HOME. Initialize once before any worker/model turn.
+                warmup = native.restored_snapshot(
+                    cdx, workdir, native_home, args.model, args.reasoning_effort,
+                    args.timeout, report["auth_identity_sha256"],
                 )
-                phase_cases = phase_case_records(cases, run_matrix, args.runs)
-            report["phases"][phase] = {
-                "run_matrix": {
-                    case.id: run_matrix[index] for index, case in enumerate(cases)
-                },
-                "cases": phase_cases,
-                "summary": summarize_phase(phase_cases),
-            }
-            atomic_write_json(report_path, report)
+                warmup_reasons = native.phase_inventory_reasons(
+                    warmup, "red", stage_target, report["skill_sha256"],
+                )
+                if warmup_reasons or warmup.get("auth_identity_sha256") != report["auth_identity_sha256"]:
+                    raise EvalError("Native warmup RED inventory or identity is invalid")
+                report["native_warmup_red"] = warmup
+                atomic_write_json(report_path, report)
+            for phase in phases:
+                context = staged_skill(skill_dir, stage_target) if phase == "green" else _null_context()
+                with context:
+                    def execute(case: EvalCase, run_number: int) -> dict:
+                        print(
+                            f"[{phase.upper()}] {case.id} run {run_number}/{args.runs}",
+                            flush=True,
+                        )
+                        parameters = (
+                            cdx, case, workdir, artifact_dir, phase, run_number,
+                            args.model, args.reasoning_effort, args.timeout, skill_name,
+                        )
+                        if native:
+                            execution = native.run_native(
+                                *parameters, native_home, report["skill_sha256"],
+                                report["auth_identity_sha256"],
+                            )
+                        else:
+                            execution = run_cdx(*parameters)
+                        execution["score"] = score_response(
+                            case,
+                            execution["response"],
+                            method_index,
+                            skill_activated=execution["skill_activated"],
+                            require_activation=phase == "green",
+                            reference_read=execution["expected_reference_read"],
+                            require_reference=(
+                                phase == "green" and case.should_trigger and bool(case.reference)
+                            ),
+                        )
+                        execution["infrastructure_reason"] = infrastructure_reason(execution)
+                        execution["status"] = execution_status(execution)
+                        return execution
+
+                    def save_progress(
+                        _case_index: int,
+                        _run_index: int,
+                        matrix: list[list[dict | None]],
+                    ) -> None:
+                        phase_cases = phase_case_records(cases, matrix, args.runs)
+                        report["phases"][phase] = {
+                            "run_matrix": {
+                                case.id: matrix[index] for index, case in enumerate(cases)
+                            },
+                            "cases": phase_cases,
+                            "summary": summarize_phase(phase_cases),
+                        }
+                        atomic_write_json(report_path, report)
+
+                    stored_runs = report.get("phases", {}).get(phase, {}).get("run_matrix")
+                    initial_matrix = resume_run_matrix(cases, args.runs, stored_runs)
+                    run_matrix = execute_run_matrix(
+                        cases, args.runs, args.jobs, execute,
+                        on_run_complete=save_progress,
+                        initial_matrix=initial_matrix,
+                    )
+                    phase_cases = phase_case_records(cases, run_matrix, args.runs)
+                report["phases"][phase] = {
+                    "run_matrix": {
+                        case.id: run_matrix[index] for index, case in enumerate(cases)
+                    },
+                    "cases": phase_cases,
+                    "summary": summarize_phase(phase_cases),
+                }
+                atomic_write_json(report_path, report)
+            if native:
+                report["native_restored_red"] = native.restored_snapshot(
+                    cdx, workdir, native_home, args.model, args.reasoning_effort,
+                    args.timeout, report["auth_identity_sha256"],
+                )
+                atomic_write_json(report_path, report)
 
         gate_reasons = []
+        if native:
+            isolation_reasons = native.report_inventory_reasons(report, stage_target)
+            report["isolation_gate"] = {
+                "profile": native.PROFILE, "passed": not isolation_reasons,
+                "reasons": isolation_reasons,
+            }
+            gate_reasons.extend(isolation_reasons)
         if "green" in report["phases"]:
             green = report["phases"]["green"]["summary"]
             gate_reasons.extend(green_gate_reasons(
@@ -1986,7 +2144,9 @@ def main() -> None:
         print_summary(report)
         if not args.no_fail and not report["gate"]["passed"]:
             sys.exit(1)
-    except EvalError as exc:
+    except RuntimeError as exc:
+        if not isinstance(exc, EvalError) and (native is None or not isinstance(exc, native.probe.ProbeError)):
+            raise
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
 

@@ -1,5 +1,114 @@
 # Changelog
 
+## v0.15 — native isolation, discovery и проверка поставки
+
+- Scope определяется до открытия skill: explicit BSP API review имеет
+  приоритет; библиотечная миграция/обработчик обновления требует маршрута
+  даже без имени БСП. Чистые платформенные задачи не открывают skill.
+- Уточнены reader evidence и bounded wording criteria с paired controls;
+  сохранены реальные FAIL и старые отчёты, пороги не снижены. На `2c2ba52`
+  четыре отдельных native этапа прошли gates при guided 79/81 individual
+  и full activation 15/18; не объявляются безошибочными.
+- Локальный `v0.15-rc1` из `7b1abc7` собран дважды побайтно одинаково:
+  ZIP/tar.gz по 29 файлов, 24 references, без локальных BSP sources,
+  vendor/cache/credentials. Оба упакованных установщика: 12 первых
+  установок, 12 обновлений, 24 безопасных отказа без сети и глобальных путей.
+- Отдельные свежие native-прогоны именно распакованного ZIP: smoke 1/1,
+  guided **27/27 majority, 78/81 individual**, activation **6/6, 18/18**;
+  все quality/isolation gates PASS. Guided strict read 76/78, activation
+  positive/read 9/9 и 6/6; false activation 0/3 и 0/9. Три guided FAIL
+  сохранены (wording и mixed-reader exit 1); activation coverage 2/24.
+- 191 tests PASS до/после, API 664/664, semantic ERROR/WARN 0/0. Parent
+  независимо перепроверил 200 scores и raw reader evidence, fixtures/auth/
+  fingerprints/cleanup; known-credential scans 809 + 531 файлов, 0 совпадений.
+  На этапе проверки кандидата тег, push и публикация не выполнялись.
+  README/workflow/поставка согласованы; v0.15 поставляет те же проверенные байты.
+  [Подробная проверка кандидата и ограничения](reports/bsp-skills/7b1abc7-release-candidate-readiness.md).
+
+## 2026-10-09 — reference recovery после P2 (не выпущено)
+
+- Reference root привязан к прочитанному installed `SKILL.md`; добавлен
+  UTF-8 fallback с проверкой независимости от cwd/системного skill root.
+- Explicit reader failure больше не маскируется успешным listing того же
+  batch; literal Path parent/join учитывается только при наблюдаемом выводе.
+  В исходном P2 отказе reference-read не засчитывался: 26/26 был majority.
+- На `5a4a338` native guided **27/27 majority, 80/81 individual**, activation
+  **5/6, 15/18**; все quality/isolation gates PASS. Hook reference-read 6/6,
+  но targeted quality 2/3, full guided hook 3/3; false activation negatives 1/9.
+  Пять отдельных GREEN FAIL сохранены; пороги/корпуса не менялись.
+- 174 tests PASS, API 664/664, semantic 0/0; fingerprints/isolation независимо
+  перепроверены, known-credential scan 832 файлов PASS, staging/homes удалены.
+  [Результаты, реальные отказы и оговорки](reports/bsp-skills/p3-reference-recovery-after-p2.md).
+
+## 2026-10-08 — scoring и native activation P2 (не выпущено)
+
+- Четыре сохранённых GREEN false negatives воспроизведены и исправлены:
+  локальные отрицания про другой метод/аргументы больше не скрывают
+  рекомендуемый BSL; равнозначные «неправильно» и латинское BSP принимаются.
+  Paired regression сохраняет отказ для неверного вызова и отсутствующих
+  требований; пороги не снижались. Исторический отчёт не изменён.
+- Уточнены implicit activation cues и version boundary; русский description
+  JSON-escaped в YAML оставляет router ASCII, native metadata decoding
+  проверен. Чистые платформенные задачи остаются вне scope.
+- Свежие отдельные native GREEN результаты на `181e0f6`: guided **27/27
+  majority, 80/81 individual**, activation **5/6, 16/18**, positive activation
+  3/3, reference-read 2/2, false activation negatives 0/9; оба gate PASS.
+  API БСП/infra ошибок GREEN 0. Три реальные quality failures сохранены:
+  два неверных платформенных вызова и один отказ от каркаса при проблеме
+  доступа к reference; их устранение не заявляется.
+- 168 tests PASS, API 664/664, semantic 0/0, оба dry-run PASS.
+  [История и ограничения](reports/bsp-skills/p2-scoring-and-native-activation-after-v0.14.md).
+
+## 2026-10-08 — проверенный native runtime transport P0 (не выпущено)
+
+- Добавлен opt-in `--transport native`: inventory до и после модельного turn
+  в одном app-server процессе, binding PID/thread/turn и контроль RED после
+  удаления staging. Isolation gate отдельный от quality, оба обязательны.
+- Сохранены scorer и пороги; стандартный transport остаётся `exec`. Новый
+  профиль не смешивается с историческими прогонами. Schema v5 фиксирует
+  transport/profile, SHA256 helpers и account identity для resume.
+- ChatGPT auth используется только в защищённом disposable home, исходный
+  auth.json не изменяется. Credentials удаляются из trace artifacts; ранние
+  native notifications сохраняются до RPC ack. 157 unit-тестов PASS,
+  coverage/semantic и оба eval dry-run PASS. Реальный smoke/baseline ещё
+  требуется; **P0 пока открыт**.
+- Первый реальный native smoke на `f32469a` завершился INFRA FAIL до модели
+  из-за `workspace routing discovery failed`. Исправлено сохранение безопасных
+  proxy endpoint-настроек без credentials; отдельно подтверждён `account/read`.
+  Authenticated post-cleanup контроль теперь проверяет ту же identity;
+  stale PASS gates очищаются при resume. Исходный FAIL сохранён, пороги не
+  снижались. После коммита `59653f4` повторный native smoke: RED 1/1,
+  GREEN 1/1, isolation/quality gate PASS, infra 0. Resume в новом disposable
+  home тоже PASS без новых model turns. 161 unit-тест PASS; полный новый
+  baseline: GREEN 27/27 majority и 79/81 individual, API/infra ошибок GREEN 0,
+  но общий gate FAIL из-за пяти RED cold-start процессов. Без модели
+  воспроизведена гонка SQLite bootstrap (3/6 против 6/6 после последовательной
+  инициализации). Исправление `3cae3de` сериализует authenticated bootstrap
+  до model workers и сравнивает его с actual RED. Старый FAIL сохранён.
+- Свежий full native baseline после исправления: **GREEN 27/27 majority,
+  77/81 individual**, activation/reference 26/26, API/process/infra ошибок
+  GREEN 0; isolation и общий gate **PASS**. Full resume в новом home PASS
+  без новых model turns. 162 unit-теста PASS. **P0 закрыт только для native
+  профиля**, не для старых `exec`-результатов. Четыре individual quality
+  failures сохранены для отдельного P2-разбора; скил и пороги не менялись.
+  [История итераций](reports/bsp-skills/p0-native-runtime-loop-after-v0.14.md).
+
+## 2026-10-08 — native preflight P0 (не выпущено)
+
+- Добавлен `ci/probe_eval_isolation.py`: native snapshots каталога скилов,
+  effective config и thread permissions в RED/GREEN и после cleanup;
+  разрешено только добавление staged `bsp` с проверенными байтами.
+- Проба не вызывает модель, использует disposable credential-free
+  `CODEX_HOME`, отключённые plugins/apps/hooks/memories и allowlist
+  системного environment без parent credentials/integration tokens.
+- Положительная native-проба PASS; посторонний проектный скил корректно
+  остановил отрицательный контроль до staging. 137 unit-тестов PASS,
+  API 664/664, semantic 0 ERROR / 0 WARN, оба eval dry-run PASS.
+- План актуализирован после v0.14. **P0 остаётся открытым**: отдельный
+  app-server preflight не является inventory actual `exec`-процессов,
+  behavioral baseline или новым доказательством для старых релизов.
+  [Отчёт и следующий шаг](reports/bsp-skills/p0-native-preflight-after-v0.14.md).
+
 ## 2026-10-07 — v0.14 (опубликован)
 
 - Уточнены границы выбора скила для прикладных задач, обычного BSL и платформенной

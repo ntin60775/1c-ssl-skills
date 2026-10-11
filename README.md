@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.
 Чтобы установить конкретный тег или коммит, передайте `--ref`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.sh | bash -s -- --ref v0.14
+curl -fsSL https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.sh | bash -s -- --ref v0.15
 ```
 
 Если не хочется выполнять загруженный код через pipe, сначала сохраните и
@@ -59,7 +59,7 @@ irm https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.ps1 -Ou
 .\install.ps1 -Agent Codex
 .\install.ps1 -Agent OpenCode
 .\install.ps1 -Target C:\path\to\skills
-.\install.ps1 -Agent Codex -Ref v0.14
+.\install.ps1 -Agent Codex -Ref v0.15
 Remove-Item .\install.ps1
 ```
 
@@ -156,7 +156,7 @@ Windows, незакоммиченные изменения и Python cache не 
 подготовленное Git-дерево через `--ref`. Тег и сеть для сборки не нужны:
 
 ```bash
-python ci/build_release.py --ref HEAD --version v0.14 --output-dir .tmp/v0.14-candidate
+python ci/build_release.py --ref HEAD --version v0.15 --output-dir .tmp/v0.15-candidate
 ```
 
 Выходной каталог должен быть новым. В нём — ZIP, tar.gz, распакованный
@@ -219,7 +219,8 @@ Fingerprint скила вычисляется по точным байтам и 
 число повторов, фазы и пороги; сохраняет уже завершённые качественные результаты
 и повторяет только отсутствующие, незавершённые или инфраструктурно упавшие
 запуски. Отчёт атомарно обновляется после каждого `case × phase × run`.
-Текущая схема отчёта — v4: старые отчёты нельзя возобновлять с новой семантикой.
+Текущая схема отчёта — v5: отчёты v4 и более ранние нельзя возобновлять
+с новой семантикой. Исторические релизные результаты остаются неизменными.
 Инфраструктурные причины (`quota/rate limit`, authentication, network, timeout,
 недоступная модель, sandbox policy и повреждённая кодировка tool output)
 отделены от ошибок качества ответа.
@@ -274,6 +275,103 @@ restricted token: до прогона нужно проверить реальн
 точность методов, вызовы
 служебного API и модулей `*Переопределяемый`, запрещённые антипаттерны и расход
 токенов. Ненулевой код означает, что GREEN не достиг заданных порогов.
+
+### Native runtime transport (отдельный профиль)
+
+`--transport native` выполняет модельный turn через app-server и сохраняет
+native inventory **до и после turn в том же процессе**, с thread/turn IDs.
+После удаления staging снимается авторизованный контрольный RED snapshot. Каталоги прочих
+скилов, config, permissions и account identity должны совпадать между
+реальными RED/GREEN-запусками; нарушение считается инфраструктурным отказом.
+Этот opt-in профиль не объявляется эквивалентным историческому `exec`.
+
+```bash
+python ci/run_skill_evals.py --transport native --dir /path/to/consumer --case message-bound-to-field --runs 1 --model gpt-6-luna --reasoning-effort medium --output .tmp/native-smoke.json
+```
+
+Нужен отдельный Git-корень вне репозитория и существующий ChatGPT login.
+По умолчанию читается `$CODEX_HOME/auth.json` (или `~/.codex/auth.json`);
+`--auth-file PATH` задаёт другой источник вне consumer-корня. Credentials
+копируются только в защищённый disposable home, который удаляется после
+прогона; исходный auth.json и глобальные настройки/скилы не изменяются.
+Parent API keys и integration tokens не передаются. Credential-free proxy
+URL без userinfo/query/fragment сохраняются для сетевой маршрутизации и
+входят в environment fingerprint. Plugins/apps/hooks/memories/multi-agent/goals
+отключены одинаково для фаз. Поддерживается только
+`--phase both`; dry-run не читает credentials и не вызывает модель.
+
+BSL scorer и quality thresholds те же, что у `exec`. Отдельный
+`isolation_gate` включён в общий gate, но не заменяет quality gate.
+Resume фиксирует transport/profile, SHA256 native helpers и identity аккаунта
+(не tokens); ранние notifications не теряются до RPC ack, а результаты
+разных профилей не объединяются. Native trace artifacts редактируются для
+удаления credentials; raw auth/config RPC не сохраняются. Холодный SQLite
+bootstrap сериализован до пула: без этого параллельные app-servers могут
+падать в новом home ещё до inventory. Bootstrap также проверяется gate.
+
+Свежий native baseline: GREEN 27/27 majority, 77/81 individual, оба gate PASS,
+без API/process/infra ошибок GREEN. P0 — приоритет «чистая и воспроизводимая
+база сравнений» — закрыт **в части runtime inventory этого профиля**;
+четыре individual quality failures остались в отчёте. `isolation_gate` не
+проверяет нейтральность/неизменность обычных consumer-файлов. Ретроспективный
+аудит подтвердил нейтральный текст README в наблюдаемых RED/GREEN чтениях,
+но полного исторического file manifest нет: этот критерий P0 остаётся открытым.
+Стандартный/исторический `exec` и native activation corpus этим baseline
+не проверены. [Аудит fixture и ограничения resume](reports/bsp-skills/v0.14-0749271-review-followup.md).
+[История commit/run/fix/rerun](reports/bsp-skills/p0-native-runtime-loop-after-v0.14.md).
+
+После P2-калибровки evaluator и metadata выполнены **отдельные свежие** native
+прогоны: guided **27/27 majority, 80/81 individual**, activation **5/6,
+16/18**; оба gate PASS в обоих корпусах. False activation отрицательных задач
+0/9; три настоящих quality failures сохранены, не объявлены исправленными.
+Исторические отчёты не пересчитаны задним числом. Эти изменения не выпущены.
+[Разбор и проверки P2](reports/bsp-skills/p2-scoring-and-native-activation-after-v0.14.md).
+
+После исправления root/reference recovery на `5a4a338`: свежий guided
+**27/27 majority, 80/81 individual**, activation **5/6, 15/18**, оба gate PASS.
+Hook читает reference 6/6 в targeted и полном прогонах, но targeted ответ
+правилен только 2/3; false activation negatives 1/9. Individual FAIL сохранены;
+чтение и majority не равны безошибочному ответу.
+[Reference recovery и ограничения](reports/bsp-skills/p3-reference-recovery-after-p2.md).
+
+При подготовке **v0.15** проверен локальный кандидат `v0.15-rc1` из `7b1abc7`:
+детерминированная упаковка и оба упакованных установщика PASS. Отдельные
+native-прогоны реально распакованного ZIP: smoke **1/1**, guided **27/27
+majority, 78/81 individual**, activation **6/6, 18/18**; все quality/isolation
+gates PASS. Guided strict reference-read **76/78**, false activation **0/3**;
+activation positive/read **9/9 и 6/6**, false activation **0/9**. Три guided
+individual FAIL сохранены; это не исправление исторических платформенных
+ошибок и не полное activation coverage (2/24 references).
+[Проверка поставки, raw FAIL и ограничения](reports/bsp-skills/7b1abc7-release-candidate-readiness.md).
+
+### Native preflight изоляции (без вызова модели)
+
+Для отдельного потребительского **Git-корня вне этого репозитория** можно
+сравнить native-каталоги RED/GREEN и проверить возврат к RED после cleanup:
+
+```bash
+python ci/probe_eval_isolation.py --dir /path/to/consumer --model gpt-6-luna --reasoning-effort medium --output .tmp/native-preflight.json
+```
+
+Требуется Codex с native `skills/list`, `config/read`, `plugin/list` и
+`thread/start` (проверено на CLI 0.160.0). Путь отчёта должен быть новым и вне
+consumer-корня. Существующий staged `bsp` и связанные `.agents/skills` не
+перезаписываются. Посторонние проектные скилы, ошибки discovery, изменение
+прочих скилов/конфигурации или неверные байты staged `bsp` дают отказ.
+
+Аудит использует временный **credential-free `CODEX_HOME`**, отключает
+plugins/apps/hooks/memories, не копирует credentials и не запускает model
+turns. Передаётся только allowlist системных переменных/путей, без API keys,
+provider overrides и integration tokens из parent environment.
+Одинаковые user/system-скилы могут оставаться в native-каталоге;
+чистый `CODEX_HOME` не означает пустой каталог. В отчёт входят metadata/content
+fingerprints, но не raw config и не credentials.
+
+**Это отдельный app-server профиль, не inventory реальных `exec`-запусков.**
+PASS preflight не закрывает P0, не является behavioral gate и не усиливает
+результаты прежних релизов. Inventory в процессе поведенческого turn уже
+реализован в описанном выше `native-runtime-v1`; отдельный preflight его не
+заменяет. [Результат и исторические ограничения пробы](reports/bsp-skills/p0-native-preflight-after-v0.14.md).
 
 ## Лицензия
 

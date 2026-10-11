@@ -1,6 +1,6 @@
 ---
 name: bsp
-description: "Verified 1C:BSP 3.1.11 APIs and integration workflows. Activate for BSP module/API selection or standard-subsystem integration, including form-field validation messages and safe upgrade writes. Covers jobs, exchange, printing, files, access, upgrades, signatures, localization and classifiers. Native platform plan-of-exchange manager registration, ordinary BSL functions and form-element property edits without BSP integration do not need this skill. When asked about another BSP version, use it only to state the 3.1.11 boundary, not to transfer unverified signatures. Windows: use native rg or Python UTF-8 stdout to read references."
+description: "\u0411\u0421\u041f / \u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u0447\u043d\u0430\u044f \u0438\u043d\u0442\u0435\u0433\u0440\u0430\u0446\u0438\u044f 1\u0421. Scope before opening: Explicit BSP API review, including method existence, requires the matching-version reference. A migration/update handler (\u043c\u0438\u0433\u0440\u0430\u0446\u0438\u044f/\u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u043a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u0438) using a library to save objects without business logic/exchange registration -> read this skill before choosing a write mechanism, even without a BSP name or version. \u041e\u0448\u0438\u0431\u043a\u0430 \u0443 \u043f\u043e\u043b\u044f \u0444\u043e\u0440\u043c\u044b \u0438 \u041e\u0442\u043a\u0430\u0437 \u0432 \u0440\u0435\u0448\u0435\u043d\u0438\u0438 \u0441\u043e \u0441\u0442\u0430\u043d\u0434\u0430\u0440\u0442\u043d\u044b\u043c\u0438 \u043f\u043e\u0434\u0441\u0438\u0441\u0442\u0435\u043c\u0430\u043c\u0438 -> read. Pure BSL, existing form element properties, or explicitly platform-only exchange -> answer without opening this skill. The platform-only exclusion applies only without BSP API review. References verify BSP 3.1.11 only; other versions need matching sources. Windows: native rg or Python UTF-8."
 when_to_use: "Нужно вызвать подсистему БСП из прикладного кода, выбрать правильный публичный метод/общий модуль, сверить сигнатуру или регион API, решить — стабильный API или служебный/устаревший."
 license: "MIT"
 ---
@@ -30,27 +30,34 @@ global shell settings.
 
 ## Workflow
 
-Scope: apply this workflow to BSP integration or API review. Answer standalone
-BSL/platform questions directly when they need no BSP library or subsystem;
-native plan-of-exchange manager change registration is platform-only. The
-presence of BSL files or a form element alone is not an integration task.
+Scope precedence: explicit BSP API review, including checking whether a method
+exists, requires the selected reference even when the recommendation uses
+platform APIs. Apply the version boundary below first. Standalone platform-only
+requests without BSP API review are outside this workflow; answer them directly.
+The presence of BSL files or a form element alone is not an integration task.
+A library-based migration/update write is an integration task even without
+an explicit BSP name or version; route it to `update.md` after the version check.
 
-1. Select one primary reference from the task table. Add a second only for a
-   genuinely cross-cutting task, such as printing in a background job.
-2. Open the selected reference before answering; the router and remembered
-   platform knowledge are insufficient. Locate the scenario using `rg -n`
-   headings/keywords, then read its rules, signature, example and pitfalls
-   with native rg context options or Python. If a read fails, retry the
-   absolute reference path built from the `SKILL.md` path you just opened,
-   not another skill directory. If still unreadable, state that the BSP call
-   is unverified instead of guessing it. This step is complete when the
-   proposed answer is checked against that section. Read the whole file only
-   if section reading is unavailable; avoid unrelated material.
-3. If the user asks about another BSP version, state that 3.1.11 references
-   cannot verify it; request that version's documentation/export and do not
-   show a runnable 3.1.11 signature as if it applied to that version. If the
-   user proposes a call or rule, check its original full `Module.Method` name
-   and purpose. Identify mismatches explicitly.
+1. Check the requested BSP version. For a different version, explain that
+   these 3.1.11 references cannot confirm its signatures and request matching
+   documentation/export; this boundary check needs no API reference. For
+   3.1.11 or an unspecified version, select one primary reference from the
+   task table. Add a second only for a genuinely cross-cutting task, such as
+   printing in a background job.
+2. Bind the installed root to the parent of the absolute `SKILL.md` file
+   you successfully opened. Build the selected path as
+   `INSTALLED_ROOT/references/REFERENCE.md`; each skill has its own root.
+   Open that file before an integration/API answer. Locate the scenario
+   using native `rg -n` headings/context, then check its rules, signature,
+   example and pitfalls. The router and remembered knowledge are insufficient.
+   If a search fails, run the reference fallback below using that same
+   absolute `SKILL.md` path. A project file listing may omit hidden `.agents/`;
+   it does not prove the installed reference is absent. A system skill's
+   path is not the root of this project skill. Declare the reference
+   unavailable only after the fallback fails; otherwise use its scenario.
+3. If the user proposes a call or rule, check its original full
+   `Module.Method` name and purpose. Identify mismatches explicitly. An API
+   signature verified for 3.1.11 is not verification for another BSP version.
 4. Prefer the stable public programmatic-interface region. Internal or
    deprecated APIs require an explicit warning and no public alternative.
    Show overridable-module hooks as implementations: BSP calls them;
@@ -70,6 +77,15 @@ The skill is self-contained and needs no developer documentation or source
 export. Resolve `references/` and `scripts/` relative to this installed
 `SKILL.md`, not the project's working directory. `src/cf/` is only an example
 export path, not a consumer project requirement.
+
+## Reference fallback
+
+Replace ABSOLUTE_SKILL_MD with the file you opened (use forward slashes),
+and REFERENCE.md with the selected table entry. This reads independently of cwd:
+
+```bash
+python -X utf8 -c "from pathlib import Path; p=Path('ABSOLUTE_SKILL_MD').parent/'references'/'REFERENCE.md'; print(p.read_text(encoding='utf-8'))"
+```
 
 ## Task routing
 
