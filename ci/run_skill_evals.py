@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -47,7 +48,7 @@ DEFAULT_SKILL = REPO_ROOT / "skills" / "bsp"
 DEFAULT_WORKDIR = REPO_ROOT / "src"
 DEFAULT_BSL_SRC = REPO_ROOT / "src" / "cf"
 DEFAULT_MODEL = "gpt-5.6-luna"
-REPORT_SCHEMA_VERSION = 5
+REPORT_SCHEMA_VERSION = 7
 SKILL_CACHE_PATTERNS = ("__pycache__", "*.pyc", "*.pyo")
 WINDOWS_READING_INSTRUCTIONS = (
     "Text files are UTF-8. On Windows, read them using rg -n . -- PATH "
@@ -112,6 +113,14 @@ class EvalCase:
     required_code_block_patterns: tuple[str, ...] = ()
     forbidden_code_patterns: tuple[str, ...] = ()
     error_handling_rule: ErrorHandlingRule | None = None
+    secondary_references: tuple[str, ...] = ()
+    required_syntax_patterns: tuple[str, ...] = ()
+
+    @property
+    def required_references(self) -> tuple[str, ...]:
+        if not self.should_trigger or self.reference is None:
+            return ()
+        return (self.reference, *self.secondary_references)
 
 
 @dataclass(frozen=True)
@@ -155,9 +164,30 @@ def load_cases(path: Path) -> list[EvalCase]:
         required_code_blocks = _pattern_tuple(
             raw, "required_code_block_patterns", case_id, required=False
         )
+        required_syntax = _pattern_tuple(
+            raw, "required_syntax_patterns", case_id, required=False
+        )
         forbidden_code = _pattern_tuple(
             raw, "forbidden_code_patterns", case_id, required=False
         )
+        should_trigger = bool(raw.get("should_trigger", True))
+        primary = raw.get("reference")
+        if primary is not None and (
+            not isinstance(primary, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]+\.md", primary)
+        ):
+            raise EvalError(f"Case {case_id} has invalid reference")
+        secondary_raw = raw.get("secondary_references", [])
+        if (not isinstance(secondary_raw, list)
+                or not all(isinstance(item, str) for item in secondary_raw)):
+            raise EvalError(f"Case {case_id} has invalid secondary_references")
+        secondary = tuple(secondary_raw)
+        if secondary and (primary is None or not should_trigger):
+            raise EvalError(f"Case {case_id} cannot declare secondary_references without a positive primary reference")
+        if (len(secondary) != len(set(secondary))
+                or primary in secondary
+                or any(not re.fullmatch(r"[A-Za-z0-9_-]+\.md", item) for item in secondary)):
+            raise EvalError(f"Case {case_id} has invalid or duplicate secondary_references")
         rule_raw = raw.get("error_handling_rule")
         error_rule = None
         if rule_raw is not None:
@@ -175,7 +205,7 @@ def load_cases(path: Path) -> list[EvalCase]:
             error_rule = ErrorHandlingRule(rule_raw["value"], rule_raw["source_call"], tuple(rule_raw["normal_values"]))
         for pattern in (
             required + forbidden + activation + required_code + required_code_blocks
-            + forbidden_code
+            + required_syntax + forbidden_code
         ):
             try:
                 re.compile(pattern, re.I | re.S)
@@ -187,8 +217,8 @@ def load_cases(path: Path) -> list[EvalCase]:
         result.append(EvalCase(
             id=case_id,
             task=task.strip(),
-            reference=raw.get("reference"),
-            should_trigger=bool(raw.get("should_trigger", True)),
+            reference=primary,
+            should_trigger=should_trigger,
             requires_bsl=bool(raw.get("requires_bsl", False)),
             required_patterns=required,
             forbidden_patterns=forbidden,
@@ -197,6 +227,8 @@ def load_cases(path: Path) -> list[EvalCase]:
             required_code_block_patterns=required_code_blocks,
             forbidden_code_patterns=forbidden_code,
             error_handling_rule=error_rule,
+            secondary_references=secondary,
+            required_syntax_patterns=required_syntax,
         ))
     if not result:
         raise EvalError("Eval corpus is empty")
@@ -216,7 +248,7 @@ def load_reference_matrix(path: Path) -> tuple[dict[str, list[str]], list[str]]:
     if not isinstance(unscoped, list):
         raise EvalError("Reference matrix must contain an unscoped_cases array")
     for reference, case_ids in references.items():
-        if not isinstance(reference, str) or not reference.endswith(".md"):
+        if not isinstance(reference, str) or not re.fullmatch(r"[A-Za-z0-9_-]+\.md", reference):
             raise EvalError(f"Invalid reference matrix key: {reference!r}")
         if not isinstance(case_ids, list) or not all(
             isinstance(case_id, str) and case_id for case_id in case_ids
@@ -244,27 +276,36 @@ def validate_reference_matrix(
         raise EvalError(f"Reference matrix names unknown files: {', '.join(unknown)}")
 
     cases_by_id = {case.id: case for case in cases}
-    assignments: dict[str, str | None] = {}
+    assignments: dict[str, set[str]] = {}
     for reference, case_ids in references.items():
+        if len(case_ids) != len(set(case_ids)):
+            raise EvalError(f"Reference matrix contains duplicate case in {reference}")
         for case_id in case_ids:
-            if case_id in assignments:
-                raise EvalError(f"Eval case occurs more than once in reference matrix: {case_id}")
-            assignments[case_id] = reference
+            if case_id not in cases_by_id:
+                raise EvalError(f"Reference matrix names unknown eval case: {case_id}")
+            assignments.setdefault(case_id, set()).add(reference)
+    if len(unscoped_cases) != len(set(unscoped_cases)):
+        raise EvalError("Reference matrix contains duplicate unscoped case")
     for case_id in unscoped_cases:
+        if case_id not in cases_by_id:
+            raise EvalError(f"Reference matrix names unknown eval case: {case_id}")
         if case_id in assignments:
-            raise EvalError(f"Eval case occurs more than once in reference matrix: {case_id}")
-        assignments[case_id] = None
+            raise EvalError(f"Unscoped eval case also has references: {case_id}")
 
-    if missing := sorted(set(cases_by_id) - set(assignments)):
+    expected_scoped = {case.id for case in cases if case.reference is not None}
+    expected_unscoped = {case.id for case in cases if case.reference is None}
+    if missing := sorted((expected_scoped - set(assignments)) | (expected_unscoped - set(unscoped_cases))):
         raise EvalError(f"Reference matrix does not assign eval cases: {', '.join(missing)}")
-    if unknown := sorted(set(assignments) - set(cases_by_id)):
-        raise EvalError(f"Reference matrix names unknown eval cases: {', '.join(unknown)}")
-    for case_id, assigned_reference in assignments.items():
-        corpus_reference = cases_by_id[case_id].reference
-        if corpus_reference != assigned_reference:
+    if extra := sorted((set(assignments) - expected_scoped) | (set(unscoped_cases) - expected_unscoped)):
+        raise EvalError(f"Reference matrix has extra assignments: {', '.join(extra)}")
+    for case_id in expected_scoped:
+        case = cases_by_id[case_id]
+        expected = {case.reference, *case.secondary_references}
+        actual = assignments.get(case_id, set())
+        if actual != expected:
             raise EvalError(
-                f"Reference matrix assigns {case_id} to {assigned_reference!r}, "
-                f"but corpus declares {corpus_reference!r}"
+                f"Reference matrix assignments for {case_id} are {sorted(actual)!r}, "
+                f"expected {sorted(expected)!r}"
             )
     return {reference: list(case_ids) for reference, case_ids in references.items()}
 
@@ -762,6 +803,19 @@ def skill_activation_evidence(
     return evidence
 
 
+def reference_read_evidence(
+    events: Iterable[dict], skill_name: str, references: Iterable[str]
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Collect strict per-reference evidence and a compatibility flat union."""
+    events = list(events)
+    by_file = {
+        reference: skill_activation_evidence(events, skill_name, reference)
+        for reference in references
+    }
+    union = list(dict.fromkeys(command for evidence in by_file.values() for command in evidence))
+    return by_file, union
+
+
 def tool_output_decode_errors(events: Iterable[dict]) -> list[dict]:
     """Reject damaged tool text rather than score an answer based on unreadable input."""
     errors = []
@@ -853,7 +907,14 @@ def warning_targets_same_call(context: str, code_syntax: str) -> bool:
         for call in CALL_RE.finditer(code_syntax)
     }
     for clause in re.split(r"(?<=[.!?;:])\s+", context):
-        if not NEGATIVE_BLOCK_RE.search(clause):
+        # A Boolean result describes denied data access, not a forbidden API.
+        # Remove only this explicit return-value predicate; independent warnings
+        # in the same clause must still target the executable call.
+        warning_clause = re.sub(
+            r"\bвозвращает\s+`?Ложь`?\s*,?\s*если\s+"
+            r"(?:чтение(?:\s+ссылки)?|доступ)\s+запрещ[её]н\w*\b", "", clause, flags=re.I,
+        )
+        if not NEGATIVE_BLOCK_RE.search(warning_clause):
             continue
         references = {
             (reference.group("module").lower(), reference.group("method").lower())
@@ -899,6 +960,12 @@ def negative_example_context(context: str, code_syntax: str) -> bool:
     argument_scoped = re.sub(
         r"\bв\s+этот\s+(?:метод|вызов)\s+передава\w*\s+"
         r"не\s+(?:нужно|следует|надо|требуется)\b", "", context, flags=re.I,
+    )
+    # Declining an intermediate data lookup is not a prohibition on the
+    # recommended API, even if the next clause says "this method returns ...".
+    argument_scoped = re.sub(
+        r"\b(?:промежуточно\s+)?получать\s+внутренн\w*\s+данн\w*\s+"
+        r"не\s+(?:нужно|следует)\b", "", argument_scoped, flags=re.I,
     )
     if not NEGATIVE_BLOCK_RE.search(argument_scoped):
         return False
@@ -1275,6 +1342,33 @@ def error_handling_rule_satisfied(blocks: list[str], rule: ErrorHandlingRule) ->
     return False
 
 
+def labeled_server_progress_fragment(response: str, executable_blocks: list[str]) -> bool:
+    """Accept a server-function *fragment* only when its adjacent label binds it.
+
+    The progress task asks for a fragment inside an already running function;
+    prose elsewhere and client-only fences cannot supply that context.
+    """
+    previous_end = 0
+    for match in BSL_FENCE_RE.finditer(response):
+        prefix = response[previous_end:match.start()]
+        previous_end = match.end()
+        label = re.split(r"\n\s*\n", prefix.rstrip())[-1]
+        if not re.search(
+            r"^\s*\*{0,2}(?:внутри|в теле)\s+(?:выполняемой\s+)?"
+            r"(?:в\s+фоне\s+)?серверной\s+функции\s*:\*{0,2}\s*$", label, re.I,
+        ):
+            continue
+        code = match.group("code")
+        if code not in executable_blocks:
+            continue
+        syntax = bsl_code_views(code)[1]
+        if re.search(r"&НаКлиенте\b|ДлительныеОперацииКлиент\.", syntax, re.I):
+            continue
+        if re.search(r"\bДлительныеОперации\.СообщитьПрогресс\s*\(", syntax, re.I):
+            return True
+    return False
+
+
 def score_response(
     case: EvalCase,
     response: str,
@@ -1299,11 +1393,16 @@ def score_response(
         executable_pattern_hit(pattern, bsl_text, bsl_syntax)
         for pattern in case.required_code_patterns
     ]
+    # Control-flow assertions inspect syntax only: strings cannot supply an effect.
+    required_syntax_hits = [
+        any(re.search(pattern, syntax, flags) for _values, syntax in code_views)
+        for pattern in case.required_syntax_patterns
+    ]
     # Each block-pattern must be demonstrated in a distinct executable fence.
     # Greedy matching is sufficient because eval patterns describe disjoint steps.
     unmatched_blocks = set(range(len(executable_blocks)))
     required_code_block_hits = []
-    for pattern in case.required_code_block_patterns:
+    for pattern_index, pattern in enumerate(case.required_code_block_patterns):
         matching_block = next(
             (
                 index for index in sorted(unmatched_blocks)
@@ -1311,6 +1410,18 @@ def score_response(
             ),
             None,
         )
+        if (matching_block is None and case.id == "neutral-background-progress"
+                and pattern_index == 0
+                and labeled_server_progress_fragment(response, executable_blocks)):
+            # The second pattern still requires a distinct client fence.
+            matching_block = next(
+                (index for index in sorted(unmatched_blocks)
+                 if re.search(r"\bДлительныеОперации\.СообщитьПрогресс\s*\(",
+                              code_views[index][1], re.I)
+                 and not re.search(r"&НаКлиенте\b|ДлительныеОперацииКлиент\.",
+                                   code_views[index][1], re.I)),
+                None,
+            )
         required_code_block_hits.append(matching_block is not None)
         if matching_block is not None:
             unmatched_blocks.remove(matching_block)
@@ -1351,6 +1462,7 @@ def score_response(
         all(required_hits)
         and all(required_code_hits)
         and all(required_code_block_hits)
+        and all(required_syntax_hits)
         and error_rule_hit
     )
     activation_ok = skill_activated if case.should_trigger else not skill_activated
@@ -1385,22 +1497,29 @@ def score_response(
         "response_grounded": response_grounded,
         "expected_hits": (
             sum(required_hits) + sum(required_code_hits) + sum(required_code_block_hits)
-            + int(case.error_handling_rule is not None and error_rule_hit)
+            + sum(required_syntax_hits) + int(case.error_handling_rule is not None and error_rule_hit)
         ),
         "expected_total": (
             len(required_hits) + len(required_code_hits) + len(required_code_block_hits)
-            + int(case.error_handling_rule is not None)
+            + len(required_syntax_hits) + int(case.error_handling_rule is not None)
         ),
         "expected_score": (
             (sum(required_hits) + sum(required_code_hits) + sum(required_code_block_hits)
-             + int(case.error_handling_rule is not None and error_rule_hit))
+             + sum(required_syntax_hits) + int(case.error_handling_rule is not None and error_rule_hit))
             / (len(required_hits) + len(required_code_hits) + len(required_code_block_hits)
-               + int(case.error_handling_rule is not None))
+               + len(required_syntax_hits) + int(case.error_handling_rule is not None))
         ),
         "missing_patterns": [
             pattern for pattern, hit in zip(case.required_patterns, required_hits) if not hit
         ] + [
             pattern for pattern, hit in zip(case.required_code_patterns, required_code_hits)
+            if not hit
+        ] + [
+            pattern for pattern, hit in zip(case.required_syntax_patterns, required_syntax_hits)
+            if not hit
+        ],
+        "missing_syntax_patterns": [
+            pattern for pattern, hit in zip(case.required_syntax_patterns, required_syntax_hits)
             if not hit
         ],
         "missing_code_patterns": [
@@ -1562,10 +1681,8 @@ def run_cdx(
     events, noise = extract_jsonl(stdout)
     response = final_message(events)
     activation_evidence = skill_activation_evidence(events, skill_name)
-    reference_evidence = (
-        skill_activation_evidence(events, skill_name, case.reference)
-        if case.should_trigger and case.reference
-        else []
+    reference_reads, reference_evidence = reference_read_evidence(
+        events, skill_name, case.required_references
     )
     tool_policy_blocked = "blocked by policy" in stderr
     (artifact_dir / f"{prefix}.response.md").write_text(response, encoding="utf-8")
@@ -1579,8 +1696,10 @@ def run_cdx(
         "response": response,
         "skill_activated": bool(activation_evidence),
         "activation_evidence": activation_evidence,
-        "expected_reference_read": bool(reference_evidence),
+        "expected_reference_read": bool(case.required_references) and all(reference_reads.values()),
         "reference_evidence": reference_evidence,
+        "reference_reads": {reference: bool(evidence) for reference, evidence in reference_reads.items()},
+        "reference_evidence_by_file": reference_reads,
         "json_events": len(events),
         "stdout_noise": noise,
         "stderr_tail": stderr[-4000:],
@@ -1694,6 +1813,7 @@ def phase_case_records(
         records.append({
             "id": case.id,
             "reference": case.reference,
+            "secondary_references": list(case.secondary_references),
             "should_trigger": case.should_trigger,
             "complete": complete,
             "majority_passed": (
@@ -1704,7 +1824,7 @@ def phase_case_records(
             ),
             "majority_reference_read": (
                 majority(run.get("expected_reference_read", False) for run in case_runs)
-                if complete and case.should_trigger and case.reference else None
+                if complete and case.required_references else None
             ),
             "runs": case_runs,
         })
@@ -1771,6 +1891,40 @@ def atomic_write_json(path: Path, payload: dict) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     temporary.replace(path)
+
+
+def ordinary_fixture_manifest(workdir: Path, stage_target: Path) -> dict[str, str]:
+    """Hash ordinary consumer files, excluding Git metadata and exactly staged BSP.
+
+    Do not follow links: a linked ordinary path can escape the consumer root or
+    hide a mutation. Directory structure without files is not part of the fixture.
+    """
+    manifest: dict[str, str] = {}
+    stage_parts = stage_target.relative_to(workdir).parts
+
+    def visit(directory: Path, parts: tuple[str, ...]) -> None:
+        try:
+            children = sorted(directory.iterdir(), key=lambda path: path.name)
+            for child in children:
+                relative = (*parts, child.name)
+                if relative == (".git",) or relative == stage_parts:
+                    continue
+                if child.is_symlink() or (os.name == "nt" and bool(
+                    getattr(child.lstat(), "st_file_attributes", 0)
+                    & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                )):
+                    raise EvalError(f"Linked ordinary consumer path: {PurePosixPath(*relative)}")
+                if child.is_dir():
+                    visit(child, relative)
+                elif child.is_file():
+                    manifest[PurePosixPath(*relative).as_posix()] = file_sha256(child)
+                else:
+                    raise EvalError(f"Unsupported ordinary consumer path: {PurePosixPath(*relative)}")
+        except OSError as exc:
+            raise EvalError(f"Cannot inventory ordinary consumer fixture: {exc}") from exc
+
+    visit(workdir, ())
+    return manifest
 
 
 def validate_resume_report(report: dict, expected: dict) -> None:
@@ -1948,8 +2102,8 @@ def main() -> None:
             if args.phase != "both":
                 raise EvalError("Native isolation requires --phase both")
             native.probe.validate_workdir(workdir, report_path)
-            if any(native.probe.is_linked(path) for path in (stage_target, stage_target.parent, stage_target.parent.parent)):
-                raise EvalError("Refusing native staging through linked paths")
+            if stage_target.exists() or any(native.probe.is_linked(path) for path in (stage_target, stage_target.parent, stage_target.parent.parent)):
+                raise EvalError("Refusing existing or linked native staging paths")
             if not args.dry_run:
                 auth_path = Path(args.auth_file).resolve() if args.auth_file else Path(
                     os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
@@ -1959,6 +2113,10 @@ def main() -> None:
                 native_auth = native.load_auth(auth_path)
         elif args.auth_file:
             raise EvalError("--auth-file is only supported with --transport native")
+        fixture_baseline = (
+            ordinary_fixture_manifest(workdir, stage_target)
+            if native and not args.dry_run else None
+        )
         report_settings = {
             "launcher": cdx,
             "transport": args.transport,
@@ -2004,6 +2162,9 @@ def main() -> None:
             except (OSError, json.JSONDecodeError) as exc:
                 raise EvalError(f"Cannot read resume report {report_path}: {exc}") from exc
             validate_resume_report(report, report_settings)
+            if native and (not isinstance(report.get("ordinary_fixture_baseline"), dict)
+                           or report["ordinary_fixture_baseline"] != fixture_baseline):
+                raise EvalError("Cannot resume: ordinary consumer fixture differs or baseline is missing")
             artifact_dir.mkdir(parents=True, exist_ok=True)
             report["complete"] = False
             report["resumed_at"] = datetime.now(timezone.utc).isoformat()
@@ -2016,6 +2177,7 @@ def main() -> None:
                 **report_settings,
                 "jobs": args.jobs,
                 "complete": False,
+                **({"ordinary_fixture_baseline": fixture_baseline} if native else {}),
                 "phases": {},
                 "report_path": str(report_path),
             }
@@ -2025,7 +2187,24 @@ def main() -> None:
         report.pop("isolation_gate", None)
         report.pop("native_restored_red", None)
         report.pop("native_warmup_red", None)
+        report.pop("ordinary_fixture_gate", None)
         atomic_write_json(report_path, report)
+
+        def check_fixture(label: str) -> bool:
+            if not native:
+                return True
+            current = ordinary_fixture_manifest(workdir, stage_target)
+            report.setdefault("ordinary_fixture_checks", {})[label] = current
+            passed = current == fixture_baseline
+            if not passed:
+                report["ordinary_fixture_gate"] = {
+                    "passed": False, "reasons": [f"Ordinary consumer fixture differs at {label}"],
+                }
+            atomic_write_json(report_path, report)
+            return passed
+
+        if not check_fixture("before_warmup"):
+            raise EvalError("Ordinary consumer fixture changed before native warmup")
         home_context = native.authenticated_home(native_auth) if native else _null_context()
         with home_context as native_home:
             if native:
@@ -2043,6 +2222,8 @@ def main() -> None:
                 report["native_warmup_red"] = warmup
                 atomic_write_json(report_path, report)
             for phase in phases:
+                if not check_fixture(f"before_{phase}"):
+                    raise EvalError(f"Ordinary consumer fixture changed before {phase.upper()} model calls")
                 context = staged_skill(skill_dir, stage_target) if phase == "green" else _null_context()
                 with context:
                     def execute(case: EvalCase, run_number: int) -> dict:
@@ -2069,7 +2250,7 @@ def main() -> None:
                             require_activation=phase == "green",
                             reference_read=execution["expected_reference_read"],
                             require_reference=(
-                                phase == "green" and case.should_trigger and bool(case.reference)
+                                phase == "green" and bool(case.required_references)
                             ),
                         )
                         execution["infrastructure_reason"] = infrastructure_reason(execution)
@@ -2107,6 +2288,8 @@ def main() -> None:
                     "summary": summarize_phase(phase_cases),
                 }
                 atomic_write_json(report_path, report)
+                if not check_fixture(f"after_{phase}_cleanup"):
+                    raise EvalError(f"Ordinary consumer fixture changed after {phase.upper()} cleanup")
             if native:
                 report["native_restored_red"] = native.restored_snapshot(
                     cdx, workdir, native_home, args.model, args.reasoning_effort,
@@ -2116,7 +2299,13 @@ def main() -> None:
 
         gate_reasons = []
         if native:
+            check_fixture("after_native_cleanup")
+            fixture_reasons = report.get("ordinary_fixture_gate", {}).get("reasons", [])
+            report["ordinary_fixture_gate"] = {
+                "passed": not fixture_reasons, "reasons": fixture_reasons,
+            }
             isolation_reasons = native.report_inventory_reasons(report, stage_target)
+            isolation_reasons.extend(fixture_reasons)
             report["isolation_gate"] = {
                 "profile": native.PROFILE, "passed": not isolation_reasons,
                 "reasons": isolation_reasons,

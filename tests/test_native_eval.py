@@ -256,7 +256,7 @@ class NativeTransportTests(unittest.TestCase):
             "score": {"passed": True, "invalid_methods": [], "unsafe_calls": [], "forbidden_hits": []},
         }
         report = {
-            "schema_version": 5, "launcher": "unused", "transport": "native",
+            "schema_version": runner.REPORT_SCHEMA_VERSION, "launcher": "unused", "transport": "native",
             "transport_profile": native.PROFILE,
             "native_helper_sha256": runner.file_sha256(Path(native.__file__)),
             "native_probe_sha256": runner.file_sha256(Path(native.probe.__file__)),
@@ -269,6 +269,8 @@ class NativeTransportTests(unittest.TestCase):
             "runner_sha256": runner.file_sha256(Path(runner.__file__)), "runs": 1,
             "phases_requested": ["red", "green"], "min_pass_rate": 0.8, "min_activation_rate": 0.8,
             "complete": True, "gate": {"passed": True}, "isolation_gate": {"passed": True},
+            "ordinary_fixture_baseline": runner.ordinary_fixture_manifest(
+                workdir, workdir / ".agents" / "skills" / "bsp"),
             "native_warmup_red": {"stale": True}, "native_restored_red": {"stale": True},
             "report_path": str(output), "phases": {
                 phase: {"run_matrix": {case_id: [None]}} for phase in ("red", "green")

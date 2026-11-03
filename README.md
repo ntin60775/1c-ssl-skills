@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.
 Чтобы установить конкретный тег или коммит, передайте `--ref`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.sh | bash -s -- --ref v0.15
+curl -fsSL https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.sh | bash -s -- --ref v0.16
 ```
 
 Если не хочется выполнять загруженный код через pipe, сначала сохраните и
@@ -59,7 +59,7 @@ irm https://raw.githubusercontent.com/brake71/1c-ssl-skills/main/install.ps1 -Ou
 .\install.ps1 -Agent Codex
 .\install.ps1 -Agent OpenCode
 .\install.ps1 -Target C:\path\to\skills
-.\install.ps1 -Agent Codex -Ref v0.15
+.\install.ps1 -Agent Codex -Ref v0.16
 Remove-Item .\install.ps1
 ```
 
@@ -109,7 +109,8 @@ cp -r 1c-ssl-skills/skills/bsp ~/.claude/skills/
   конфигурации БСП.
 
 Reference-файлы не являются отдельными скилами. Агент сначала загружает
-`bsp/SKILL.md`, затем выбирает один подходящий reference. Скил рассчитан на
+`bsp/SKILL.md`, затем выбирает основной reference, а для сквозной задачи читает и нужные
+связанные разделы. Скил рассчитан на
 БСП 3.1.11; для другой версии сигнатуры и стабильность API нужно перепроверять
 по исходникам соответствующей поставки.
 
@@ -156,7 +157,7 @@ Windows, незакоммиченные изменения и Python cache не 
 подготовленное Git-дерево через `--ref`. Тег и сеть для сборки не нужны:
 
 ```bash
-python ci/build_release.py --ref HEAD --version v0.15 --output-dir .tmp/v0.15-candidate
+python ci/build_release.py --ref HEAD --version v0.16 --output-dir .tmp/v0.16-candidate
 ```
 
 Выходной каталог должен быть новым. В нём — ZIP, tar.gz, распакованный
@@ -166,12 +167,12 @@ fingerprint скила. Архивы содержат только `skills/bsp`,
 фиксирует LF для поставки, а fingerprint сортирует относительные POSIX-имена
 одинаково на Windows и Linux.
 
-Перед публикацией проверьте установку и повторное обновление из `extracted/`
-обоими упакованными установщиками в локальный путь с пробелами. Затем выполните
-smoke и полный RED/GREEN-прогон с `--skill` на **распакованном** скиле и `--dir`
-на отдельном потребительском Git-проекте без исходников БСП. Сверьте fingerprint
-отчёта с manifest. PASS другого checkout или старого архива не заменяет эту
-проверку. Сборка и проверки не создают тег и не публикуют релиз.
+Перед публикацией проверьте установку из `extracted/` обоими упакованными
+установщиками в локальный путь с пробелами. Сверьте fingerprint и состав
+`extracted/skills/bsp` с проверенным native 3× скилом, а runner и corpora —
+с отчётами; при одинаковых байтах повторять полный прогон из архива не нужно.
+При изменении скила или критериев оценки понадобится новая frozen проверка.
+Сборка и проверки не создают тег и не публикуют релиз.
 
 Результаты опубликованного v0.14: [проверка скачанных архивов и релиза](reports/bsp-skills/v0.14-published-verification.md), [качество кандидата и ограничения](reports/bsp-skills/v0.14-release-candidate-readiness.md). История v0.13 — [проверка готовности](reports/bsp-skills/v0.13-release-readiness.md).
 
@@ -188,6 +189,27 @@ reference-файлам. Это преимущественно guided-корпу�
 `evals/activation-cases.json` с собственной
 `evals/activation-reference-matrix.json`; их результаты нельзя складывать с
 основным gate в одну метрику.
+
+Activation-корпус содержит 10 сценариев и покрывает 5/24 references.
+Сквозная задача может объявить `secondary_references` в дополнение к
+основному `reference`: матрица должна перечислить её во всех заявленных
+разделах, а GREEN должен успешно прочитать **каждый** файл. В execution
+сохраняются `reference_reads` и `reference_evidence_by_file`; агрегированный
+`expected_reference_read` истинный только при чтении всех ожидаемых файлов.
+Успешный ответ или listing не заменяют чтения; reader exit 1 остаётся FAIL.
+Это расширение корпуса, не доказательство качества всех 24 разделов.
+`required_syntax_patterns` проверяет связанные условия на синтаксисе одного
+BSL-фрагмента без комментариев и строковых литералов; в RLS-сценарии отказ
+и сообщение требуются в ветке запрета. Для заявленного сценария с одним
+блоком `Если` проверяемый fence допускает ровно один `Если`, без вложенных
+условий и `ИначеЕсли`; обёртка процедуры, комментарии и строковые литералы
+не мешают. Дополнительные условия в засчитываемом fence консервативно
+отклоняются, даже если они работоспособны; это не ограничение всех fences
+ответа. Это ограниченный критерий, не универсальный анализ
+исполнения BSL и не доказательство отсутствия иных ошибочных эффектов.
+В сквозном сценарии также отвергается наблюдаемый неверный вариант:
+проверяемая ссылка передана как ключ сообщения о поле текущей формы.
+Это bounded regression, не полная проверка аргументов и типов сообщения.
 
 В сценарии классификаторов `error_handling_rule` проверяет действительную
 обработку `КодОшибки` после указанного `source_call` в одном BSL-фрагменте.
@@ -219,8 +241,9 @@ Fingerprint скила вычисляется по точным байтам и 
 число повторов, фазы и пороги; сохраняет уже завершённые качественные результаты
 и повторяет только отсутствующие, незавершённые или инфраструктурно упавшие
 запуски. Отчёт атомарно обновляется после каждого `case × phase × run`.
-Текущая схема отчёта — v5: отчёты v4 и более ранние нельзя возобновлять
-с новой семантикой. Исторические релизные результаты остаются неизменными.
+Текущая схема отчёта — v6: отчёты v5 и более ранние нельзя возобновлять
+с новой семантикой чтения нескольких references. Исторические релизные
+результаты остаются неизменными.
 Инфраструктурные причины (`quota/rate limit`, authentication, network, timeout,
 недоступная модель, sandbox policy и повреждённая кодировка tool output)
 отделены от ошибок качества ответа.
@@ -324,7 +347,8 @@ bootstrap сериализован до пула: без этого паралл
 прогоны: guided **27/27 majority, 80/81 individual**, activation **5/6,
 16/18**; оба gate PASS в обоих корпусах. False activation отрицательных задач
 0/9; три настоящих quality failures сохранены, не объявлены исправленными.
-Исторические отчёты не пересчитаны задним числом. Эти изменения не выпущены.
+Исторические отчёты не пересчитаны задним числом. На том этапе эти изменения
+ещё не были выпущены.
 [Разбор и проверки P2](reports/bsp-skills/p2-scoring-and-native-activation-after-v0.14.md).
 
 После исправления root/reference recovery на `5a4a338`: свежий guided
@@ -343,6 +367,27 @@ activation positive/read **9/9 и 6/6**, false activation **0/9**. Три guided
 individual FAIL сохранены; это не исправление исторических платформенных
 ошибок и не полное activation coverage (2/24 references).
 [Проверка поставки, raw FAIL и ограничения](reports/bsp-skills/7b1abc7-release-candidate-readiness.md).
+
+Ранний локальный кандидат **v0.16** на frozen `5f9aefe`: **217 tests PASS**, API
+**664/664**, semantic **0/0**; две идентичные сборки и оба упакованных
+установщика PASS. На реально извлечённом ZIP: smoke/RLS **1/1** каждый,
+guided **27/27 majority, 81/81 individual**, activation **10/10, 28/30**;
+все итоговые quality/isolation gates PASS. Guided activation/read **78/78**,
+activation positive/allrefs-read **21/21 и 18/18**, false activation **0/3
+и 0/9**. Coverage самостоятельной активации расширен до **5/24**.
+Одна provider-capacity попытка восстановлена в отдельной копии; 59 завершённых
+outcomes, включая два quality FAIL, и исходный infrastructure FAIL сохранены.
+Это историческая граница, не финальный payload релиза.
+[Поставка и ограничения раннего кандидата](reports/bsp-skills/v0.16-release-candidate-readiness.md).
+
+На более поздней границе `gpt-6-sol` / medium (`skills/bsp` fingerprint
+`a531b00ada743f832e159868c669c6d68ff120f2d0c2c4f0269141fca68e51d6`):
+232 unit tests PASS, API 664/664, семантика 0/0; полный native guided
+**27/27 majority, 80/81 individual**, activation **11/11, 32/33**;
+quality/fixture/isolation gates PASS. Два individual FAIL и ограничения
+описаны в [отчёте P5](reports/bsp-skills/p5-sol-full-matrix-after-limit-recovery.md).
+Для выпуска требуется сверить точные файлы Git-архива с этим fingerprint;
+проверку раннего архива нельзя выдавать за проверку текущего.
 
 ### Native preflight изоляции (без вызова модели)
 
