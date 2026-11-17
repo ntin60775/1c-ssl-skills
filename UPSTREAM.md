@@ -8,8 +8,8 @@
 
 | Файл | Что |
 |---|---|
-| `skills/bsp/SKILL.md` | frontmatter: добавлены `when_to_use` и `license` (нативные ключи ZCode); description — раскодированный из \u-эскейпов апстрима (смысл не меняется); тело НЕ меняется |
-| `deploy.json` | контракт v1 sot-zcode-marketplace (вендоринг `skills/bsp → .zcode/skills/bsp`) |
+| `skills/bsp/SKILL.md` | frontmatter: добавлены `whenToUse` и `license` (нативные ключи DSH); description — раскодированный из \u-эскейпов апстрима (смысл не меняется); тело НЕ меняется |
+| `deploy.json` | контракт вендоринга `skills/bsp → .dsh/1c/skills/bsp` (раскладка контура DSH; подъём скилла — пресет `1c`) |
 | `CHANGELOG.md` | одна зеркальная запись (v0.13.1) поверх апстримного файла; зеркальные релизы не туда пишутся — в журнал синков ниже |
 | `UPSTREAM.md` | этот файл |
 
@@ -23,10 +23,11 @@
 ```bash
 git fetch upstream --tags
 git merge upstream/main        # конфликтная поверхность = frontmatter SKILL.md
-# линтер под слоты ZCode:
-python3 <1c-zcode>/scripts/lint_skill_frontmatter.py skills/
-# затем: тег vX.Y.Z → re-pin в sot-zcode-marketplace/marketplace.json →
-#        deploy-plugin.py update в проектах
+# линтер под слоты DSH:
+python3 <1C-DSH>/scripts/lint_skill_frontmatter.py skills/
+# затем: тег vX.Y.Z → вендоринг в проекты:
+#        install.sh --skill bsp --target <проект>/.dsh/1c/skills
+#        (локальный чекаут — --source <репо>; подъём — пресет 1c контура)
 ```
 
 Правило гигиены: всё, что выражается обвязкой потребителя (роутер-скилл
@@ -43,3 +44,4 @@ python3 <1c-zcode>/scripts/lint_skill_frontmatter.py skills/
 | 2026-10-09 | `4f7b728` (v0.15) | v0.15 | merge апстрима; наш frontmatter сохранён поверх нового description (версия-чек первым шагом роутера, fallback-чтение reference); openai.yaml не менялся, в зеркале отсутствует; scripts/bsp_api.py не менялся |
 | 2026-10-09 | — | — | v0.15.2: description в frontmatter раскодирован из \u-эскейпов апстрима (1307 → 747 симв.) — иначе не проходит лимит ZCode 1024 (линтер); смысл не менялся. v0.15.1 не подниматься — битый по лимиту |
 | 2026-11-03 | `aa43038` (v0.16) | v0.16 | merge апстрима (BSP 3.1.11); description апстрима переписан (вызов exported-модуля / СлужебныйПрограммныйИнтерфейс → fundamentals.md; ужат хвост) — раскодирован из \u-эскейпов, 776 симв., лимит проходит; references обновлены апстримом (RLS-отказы, регистрация печатных форм, хук access-right); openai.yaml у апстрима изменён — в зеркале по-прежнему отсутствует; scripts/bsp_api.py не менялся; релиз зеркала v0.16.1 |
+| 2026-11-17 | — | — | релиз зеркала v0.16.2: наш слой переведён на слоты DSH — `when_to_use` → `whenToUse`, deploy.json → `.dsh/1c/skills/bsp`; канал ZCode (marketplace re-pin, deploy-plugin.py) снят, вендоринг — install.sh, подъём — пресет `1c` контура DSH; тело и description не менялись |

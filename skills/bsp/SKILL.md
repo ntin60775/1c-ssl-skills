@@ -1,7 +1,7 @@
 ---
 name: bsp
 description: "БСП / библиотечная интеграция 1С. In standard subsystems, exported common module ВызовСервера / СлужебныйПрограммныйИнтерфейс stability or client/server execution? Read fundamentals.md even without BSP name. Scope before opening: Explicit BSP API review, including method existence -> matching-version reference. A migration/update handler using a library to save without business logic/exchange registration -> read before write, even without a BSP name or version. Ошибка у поля формы и Отказ в решении со стандартными подсистемами -> read. Pure BSL, existing form element properties, platform-only exchange -> answer without opening this skill; platform-only exclusion applies only without BSP API review. References verify BSP 3.1.11; other versions need matching sources."
-when_to_use: "Нужно вызвать подсистему БСП из прикладного кода, выбрать правильный публичный метод/общий модуль, сверить сигнатуру или регион API, решить — стабильный API или служебный/устаревший."
+whenToUse: "Нужно вызвать подсистему БСП из прикладного кода, выбрать правильный публичный метод/общий модуль, сверить сигнатуру или регион API, решить — стабильный API или служебный/устаревший."
 license: "MIT"
 ---
 
