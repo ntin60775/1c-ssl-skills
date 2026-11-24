@@ -1,6 +1,6 @@
 ---
 name: bsp
-description: "БСП / библиотечная интеграция 1С. In standard subsystems, exported common module ВызовСервера / СлужебныйПрограммныйИнтерфейс stability or client/server execution? Read fundamentals.md even without BSP name. Scope before opening: Explicit BSP API review, including method existence -> matching-version reference. A migration/update handler using a library to save without business logic/exchange registration -> read before write, even without a BSP name or version. Ошибка у поля формы и Отказ в решении со стандартными подсистемами -> read. Pure BSL, existing form element properties, platform-only exchange -> answer without opening this skill; platform-only exclusion applies only without BSP API review. References verify BSP 3.1.11; other versions need matching sources."
+description: "БСП / библиотечная интеграция 1С. Scope before opening: Read base-common.md for an error message next to a form field and Отказ when standard subsystems are used. Changing only an existing form element property (caption, visibility) is a platform task: answer without opening this skill. Explicit BSP API review, including method existence, overrides that exclusion. In standard subsystems, exported common module ВызовСервера / СлужебныйПрограммныйИнтерфейс stability or client/server execution -> fundamentals.md. A migration/update handler saving via a library without business logic/exchange registration -> update.md even without a BSP name or version. Pure BSL or platform-only exchange -> skip. References verify BSP 3.1.11 only."
 whenToUse: "Нужно вызвать подсистему БСП из прикладного кода, выбрать правильный публичный метод/общий модуль, сверить сигнатуру или регион API, решить — стабильный API или служебный/устаревший."
 license: "MIT"
 ---
@@ -58,6 +58,13 @@ an explicit BSP name or version; route it to `update.md` after the version check
 3. If the user proposes a call or rule, check its original full
    `Module.Method` name and purpose. Identify mismatches explicitly. An API
    signature verified for 3.1.11 is not verification for another BSP version.
+   Before recommending new code, check the project's existing integration
+   pattern and reuse it when it fulfills the task. Choose a BSP API when the
+   task needs BSP behavior, a platform API for a platform-only task, and
+   custom code only for an unmet requirement. Prefer the smallest complete
+   solution that preserves access checks, error handling, data integrity and
+   existing callers; a shorter direct call is not a substitute for required
+   library behavior.
 4. Prefer the stable public programmatic-interface region. Internal or
    deprecated APIs require an explicit warning and no public alternative.
    Show overridable-module hooks as implementations: BSP calls them;
